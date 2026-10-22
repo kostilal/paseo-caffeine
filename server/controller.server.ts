@@ -79,22 +79,28 @@ export function createController(deps: ControllerDeps): Controller {
     };
   }
 
+  /** The timer and On let the lid close while the switch is on; nothing else does. */
+  const wantsLid = () => stored.lidClosed && (stored.mode === "timer" || stored.mode === "on");
+  /** What turned lid mode off, for the log: the mode, or the switch. */
+  const unwanted = () => (stored.lidClosed ? `mode ${stored.mode}` : "lid switch off");
+
   /**
    * Lid mode follows the mode when the lid switch is on: the timer's deadline under a timer,
    * no end under On. Off and Auto turn it off, and so does the switch. Only on a change a
    * person made, never on a tick: lid mode that ended on a low battery or heat stays off
-   * until somebody picks again. Lid mode Caffeine did not start (sleep switched off by hand)
-   * is not turned off by a mode change; a timer or On with the switch on takes it over.
+   * until somebody picks again (a tick only ever turns off, see dropUnwantedLid). Lid mode
+   * Caffeine did not start (sleep switched off by hand) is not turned off by a mode change; a
+   * timer or On with the switch on takes it over.
    */
   async function syncLid(): Promise<void> {
     const lid = deps.lid;
     if (!lid?.enable || !lid.disable) return;
     const current = lid.status();
     const ours = current.forever || current.until !== "";
-    const want = stored.lidClosed && (stored.mode === "timer" || stored.mode === "on");
+    const want = wantsLid();
     try {
       if (!want) {
-        if (ours) await lid.disable(stored.lidClosed ? `mode ${stored.mode}` : "lid switch off");
+        if (ours) await lid.disable(unwanted());
       } else if (stored.mode === "on") {
         if (!current.forever) await lid.enable("forever");
       } else if (current.until !== stored.until) {
@@ -119,6 +125,22 @@ export function createController(deps: ControllerDeps): Controller {
     return next;
   }
 
+  /**
+   * Lid mode with no end that neither the mode nor the switch asks for any more: a turn-off
+   * that did not take, a timer picked under On that could not take it over and has since run
+   * out, a change cut short by a restart. It has no deadline and no guard, so nothing else
+   * would ever end it, and every tick tries. Turning it off is the safe direction; a tick
+   * never turns lid mode on. Queued with the changes a person makes and decided when its
+   * turn comes, so it cannot undo an On picked in the meantime.
+   */
+  function dropUnwantedLid(): void {
+    if (!deps.lid?.status().forever) return;
+    void oneAtATime(async () => {
+      const lid = deps.lid;
+      if (lid?.disable && lid.status().forever && !wantsLid()) await lid.disable(unwanted());
+    }).catch((failure) => log(`caffeine: lid change failed: ${String(failure)}`));
+  }
+
   async function reconcile(): Promise<Status> {
     const nowMs = now();
     const running = await deps.runningCount();
@@ -138,6 +160,7 @@ export function createController(deps: ControllerDeps): Controller {
       stored = decision.stored;
       await deps.write(stored);
     }
+    dropUnwantedLid();
 
     if (decision.active) {
       deps.keeper.hold(stored.mode === "timer" ? Date.parse(stored.until) : undefined, stored.keepDisplay);
