@@ -1,13 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Battery } from "../shared/caffeine.shared.ts";
 import {
   GUARD_LABEL,
+  HEARTBEAT_FILE,
   type LidDeps,
   type LidStored,
   createLid,
   guardPlist,
+  heartbeatGuardPlist,
+  heartbeatWait,
   parseSleepDisabled,
   setupScript,
   sudoersRule,
@@ -32,6 +38,8 @@ function fakeMac(
     failOff?: number;
     failOn?: boolean;
     guardFails?: boolean;
+    /** Only a timer's guard fails; the heartbeat's still arms. */
+    timedGuardFails?: boolean;
     unreadable?: boolean;
     hot?: () => boolean;
     lidClosed?: () => boolean;
@@ -43,7 +51,9 @@ function fakeMac(
   let disabled = options.disabled ?? false;
   let stored: LidStored = options.stored ?? { ...OFF };
   let failOff = options.failOff ?? 0;
-  let guard: number | null = null;
+  /** A timer's deadline, "heartbeat" for the guard of lid mode with no end, or null. */
+  let guard: number | "heartbeat" | null = null;
+  let beatAt: number | null = null;
   let clock = T0;
   const calls: string[] = [];
   const deps: LidDeps = {
@@ -77,12 +87,20 @@ function fakeMac(
       return { code: 0, stdout: "" };
     },
     admin: options.admin ?? (async () => void (calls.push("admin"), (ready = true))),
+    // The real ones boot the old guard out before they load the new one, so a failure leaves none.
     startGuard: async (untilMs) => {
       calls.push(`guard ${new Date(untilMs).toISOString()}`);
-      if (options.guardFails) return false;
+      if (options.guardFails || options.timedGuardFails) return (guard = null), false;
       guard = untilMs;
       return true;
     },
+    startHeartbeatGuard: async () => {
+      calls.push("guard heartbeat");
+      if (options.guardFails) return (guard = null), false;
+      guard = "heartbeat";
+      return true;
+    },
+    beat: async () => void (beatAt = clock),
     stopGuard: async () => void (calls.push("stop guard"), (guard = null)),
     read: async () => stored,
     write: async (value) => void (stored = value),
@@ -95,6 +113,7 @@ function fakeMac(
     stored: () => stored,
     disabled: () => disabled,
     guard: () => guard,
+    beatAt: () => beatAt,
     setDisabled: (value: boolean) => void (disabled = value),
     advance: (ms: number) => void (clock += ms),
   };
@@ -136,6 +155,49 @@ test("the guard is a LaunchAgent that runs at load, waits for the deadline, rest
   assert.ok(script.includes(`${Math.ceil(T0 / 1000)} - `), "waits for the deadline");
   assert.ok(script.indexOf("disablesleep 0") < script.indexOf("rm -f"), "sleep first, then it removes itself");
   assert.ok(plist.endsWith("</plist>\n"));
+});
+
+test("the guard of lid mode with no end runs at load, waits for Caffeine to go quiet for ten minutes, restores sleep and removes itself", () => {
+  const plist = heartbeatGuardPlist(HEARTBEAT_FILE, 10 * 60_000);
+  assert.match(plist, new RegExp(`<string>${GUARD_LABEL.replace(/\./g, "\\.")}</string>`), "the same item as a timer's: one guard at a time");
+  assert.match(plist, /<key>RunAtLoad<\/key><true\/>/);
+  const script = /<string>-c<\/string>\s*<string>([^<]*)<\/string>/.exec(plist)?.[1] ?? "";
+  execFileSync("/bin/sh", ["-n", "-c", script]);
+  assert.ok(script.includes(HEARTBEAT_FILE), "it watches the heartbeat");
+  assert.match(script, /-ge 600\b/, "ten minutes of quiet");
+  assert.ok(script.indexOf("disablesleep 0") < script.indexOf("rm -f"), "sleep first, then it removes itself");
+  assert.ok(plist.endsWith("</plist>\n"));
+});
+
+test("the heartbeat guard waits while Caffeine beats, and stops waiting once it has gone quiet, never before its own start allows", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "caffeine-beat-"));
+  try {
+    const now = Date.now() / 1000;
+    const quiet = join(dir, "quiet");
+    writeFileSync(quiet, "");
+    utimesSync(quiet, now - 3600, now - 3600);
+    const beating = join(dir, "beating");
+    writeFileSync(beating, "");
+    utimesSync(beating, now + 3600, now + 3600); // fresh for the whole test
+    // Two seconds of quiet, looked at every quarter second. A beat an hour old is long past
+    // that, yet a guard that has just started still waits its own two seconds, as one does after
+    // a login. `date +%s` counts whole seconds, so "two seconds" can come a little over one
+    // second after the start, never sooner; a wait that ignored its start would end at the
+    // first look.
+    const watch = (file: string, ms: number) =>
+      new Promise<number | "waiting">((resolve) => {
+        const started = Date.now();
+        const child = spawn("/bin/sh", ["-c", heartbeatWait(file, 2, 0.25)]);
+        const timer = setTimeout(() => (child.kill(), resolve("waiting")), ms);
+        child.on("exit", () => (clearTimeout(timer), resolve(Date.now() - started)));
+      });
+    const [left, waiting] = await Promise.all([watch(quiet, 6000), watch(beating, 3500)]);
+    assert.equal(waiting, "waiting", "a fresh beat keeps it waiting");
+    assert.equal(typeof left, "number", "a quiet one ends the wait");
+    assert.ok((left as number) >= 900, `not before its own start allows (left after ${String(left)} ms)`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("without the permission, turning it on changes nothing and asks for setup", async () => {
@@ -346,18 +408,29 @@ test("hot is a recorded warning level or a CPU held below full speed; the all-cl
   assert.equal(thermalWarning(""), false);
 });
 
-test("always: sleep is switched off with no deadline and no guard, and time never ends it", async () => {
+test("always: the guard first, one that waits for Caffeine rather than a deadline; time never ends it, and every tick beats", async () => {
   const mac = fakeMac();
   const lid = createLid(mac.deps);
   await lid.start();
   await lid.enable("forever");
-  assert.deepEqual(mac.calls, ["/usr/bin/sudo -n /usr/bin/pmset -a disablesleep 1", "stop guard"], "sleep off first, then the old guard goes");
+  assert.deepEqual(mac.calls, ["guard heartbeat", "/usr/bin/sudo -n /usr/bin/pmset -a disablesleep 1"], "the guard first, then sleep goes off");
   assert.deepEqual(mac.stored(), { until: "", minutes: 0, forever: true });
-  assert.equal(mac.guard(), null);
+  assert.equal(mac.guard(), "heartbeat");
   mac.advance(30 * 24 * 60 * 60_000);
   await lid.tick(onBattery(80));
+  assert.equal(mac.beatAt(), T0 + 30 * 24 * 60 * 60_000, "the tick tells the guard Caffeine is still here");
   assert.equal(mac.disabled(), true, "a month later it still holds");
   assert.equal(lid.status().forever, true);
+});
+
+test("always with no guard to be had: sleep stays on, as under a timer", async () => {
+  const mac = fakeMac({ guardFails: true });
+  const lid = createLid(mac.deps);
+  await lid.start();
+  await lid.enable("forever");
+  assert.equal(mac.disabled(), false);
+  assert.notEqual(lid.status().error, "");
+  assert.deepEqual(mac.stored(), OFF);
 });
 
 test("always ends on a low battery, and on heat", async () => {
@@ -390,32 +463,54 @@ test("heat ends a timed lid mode too", async () => {
   assert.equal(mac.disabled(), false);
 });
 
-test("always survives a restart; one switched off by hand meanwhile is let go", async () => {
+test("always survives a restart with its guard armed again; one switched off by hand meanwhile is let go", async () => {
   const kept = fakeMac({ disabled: true, stored: { until: "", minutes: 0, forever: true } });
   const lid = createLid(kept.deps);
   await lid.start();
   assert.equal(kept.disabled(), true);
-  assert.deepEqual(kept.calls, [], "no guard, nothing restored");
+  assert.deepEqual(kept.calls, ["guard heartbeat"], "the guard again, in case the one from before did not survive");
   assert.equal(lid.status().forever, true);
 
   const offByHand = fakeMac({ disabled: false, stored: { until: "", minutes: 0, forever: true } });
   await createLid(offByHand.deps).start();
   assert.deepEqual(offByHand.stored(), OFF);
+  assert.deepEqual(offByHand.calls, ["stop guard"], "and its guard goes too");
 });
 
-test("turning always off restores sleep; switching from always to a timer arms a guard", async () => {
+test("always that cannot get its guard back on a restart puts sleep back", async () => {
+  const mac = fakeMac({ disabled: true, guardFails: true, stored: { until: "", minutes: 0, forever: true } });
+  const lid = createLid(mac.deps);
+  await lid.start();
+  assert.equal(mac.disabled(), false);
+  assert.deepEqual(mac.stored(), OFF);
+});
+
+test("turning always off restores sleep; switching between always and a timer swaps their guards", async () => {
   const mac = fakeMac();
   const lid = createLid(mac.deps);
   await lid.start();
   await lid.enable("forever");
   await lid.enable(30);
-  assert.notEqual(mac.guard(), null);
+  assert.equal(mac.guard(), T0 + 31 * 60_000);
   assert.equal(mac.stored().forever, false);
   await lid.enable("forever");
-  assert.equal(mac.guard(), null, "the timer's guard goes");
+  assert.equal(mac.guard(), "heartbeat", "the timer's guard gives way to the heartbeat's");
   await lid.disable("turned off");
   assert.equal(mac.disabled(), false);
   assert.deepEqual(mac.stored(), OFF);
+  assert.equal(mac.guard(), null);
+});
+
+test("a timer picked under always whose guard cannot be armed leaves always as it was, guard included", async () => {
+  const mac = fakeMac({ timedGuardFails: true });
+  const lid = createLid(mac.deps);
+  await lid.start();
+  await lid.enable("forever");
+  await lid.enable(30);
+  assert.notEqual(lid.status().error, "");
+  assert.equal(mac.stored().forever, true);
+  assert.equal(mac.guard(), "heartbeat");
+  assert.equal(mac.disabled(), true);
 });
 
 test("the tile is told why lid mode ended by itself, until it is turned on again", async () => {
@@ -507,21 +602,22 @@ test("a failed switch from a timer to always keeps the timer's guard", async () 
   let fail = false;
   const mac = fakeMac();
   const run = mac.deps.run;
+  // The switch itself fails, not the permission check before it (`sudo -n -l`), which would
+  // stop the attempt before it reached the guard.
   mac.deps.run = async (command, args) =>
-    fail && args.join(" ").endsWith("disablesleep 1") ? { code: 1, stdout: "" } : run(command, args);
+    fail && !args.includes("-l") && args.join(" ").endsWith("disablesleep 1") ? { code: 1, stdout: "" } : run(command, args);
   const lid = createLid(mac.deps);
   await lid.start();
   await lid.enable(30);
   fail = true;
   await lid.enable("forever");
-  assert.notEqual(mac.guard(), null);
+  assert.match(lid.status().error, /disablesleep 1 failed/, "it got as far as the switch");
+  assert.equal(mac.guard(), T0 + 31 * 60_000, "the timer's own guard, back in place");
   assert.equal(mac.stored().forever, false);
 });
 
-test("with no guard to be had, lid mode under On still ends with the timer picked after it", async () => {
-  // The background item switched off in Login Items: On's lid mode needs no guard and comes on,
-  // the timer's cannot arm one and leaves it as it was. The controller's tick ends it.
-  const mac = fakeMac({ guardFails: true });
+test("a turn-off pmset refused under On is tried again by the ticks until sleep is back", async () => {
+  const mac = fakeMac({ failOff: 1 });
   const lid = createLid(mac.deps);
   let stored: Stored = { mode: "off", until: "", keepDisplay: false, lidClosed: true };
   const controller = createController({
@@ -537,13 +633,11 @@ test("with no guard to be had, lid mode under On still ends with the timer picke
   await controller.start();
   await controller.set({ mode: "on" });
   assert.equal(mac.disabled(), true);
-  await controller.set({ mode: "timer", minutes: 30 });
-  assert.equal(mac.disabled(), true, "the timer could not take lid mode over");
-  mac.advance(31 * 60_000);
+  await controller.set({ mode: "off" });
   await controller.tick();
   await settled();
-  assert.equal(stored.mode, "off");
-  assert.equal(mac.disabled(), false, "the timer is over: sleep is back");
+  assert.equal(mac.disabled(), false, "sleep is back without anyone asking again");
+  assert.equal(mac.guard(), null, "and the guard has gone with it");
   controller.stop();
 });
 
