@@ -497,6 +497,9 @@ export function createLid(deps: LidDeps): Lid {
     },
 
     async checkClosed() {
+      // Only lid mode needs the lid: without it macOS sleeps a closed Mac anyway. Turning it on
+      // starts the lid's story afresh (see enable), so nothing is lost by not looking meanwhile.
+      if (!running() || on !== true) return;
       const seen = await deps.run(IOREG, ["-r", "-k", "AppleClamshellState", "-d", "4"]).catch(() => ({ code: 1, stdout: "" }));
       const read = parseLidClosed(seen.stdout);
       // Unknown is neither: nothing changes until the lid can be read again.
@@ -507,7 +510,7 @@ export function createLid(deps: LidDeps): Lid {
         externalSeen = null;
       }
       wasClosed = read;
-      if (!read || !running() || on !== true) return;
+      if (!read) return;
       // A monitor found stays found until the lid opens. "None" is asked again every time: one
       // plugged in after the lid closed must not be blanked every minute.
       if (externalSeen !== true) {
