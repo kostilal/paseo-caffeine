@@ -16,8 +16,11 @@ import type { Battery, LidSetup, LidStatus, LidStopped } from "../shared/caffein
  * A Mac that never sleeps in a closed bag heats up and drains, so getting back to normal is
  * the part built to hold: the plugin's own deadline, a guard that restores sleep at the
  * deadline even if Paseo is gone by then (a LaunchAgent, so it also runs again after a reboot,
- * at login), a low-battery cut-off, and a check on every start. State is only let go once
- * `pmset -g` confirms sleep is back; what the tile shows is read from there, never assumed.
+ * at login), a low-battery cut-off, and a check on every start. With no end there is no
+ * deadline to wait for, so that guard waits for Caffeine instead: once the plugin has not
+ * beaten for a while (Paseo quit or crashed, the plugin gone), it restores sleep. State is only
+ * let go once `pmset -g` confirms sleep is back; what the tile shows is read from there, never
+ * assumed.
  */
 
 const PMSET = "/usr/bin/pmset";
@@ -32,6 +35,13 @@ export const LID_LOW_BATTERY = 20;
 const GUARD_GRACE_MS = 60_000;
 export const GUARD_LABEL = "com.paseo.caffeine.lid-guard";
 export const GUARD_PLIST = join(homedir(), "Library", "LaunchAgents", `${GUARD_LABEL}.plist`);
+/** Where Caffeine tells the guard of lid mode with no end that it is still watching. */
+export const HEARTBEAT_FILE = join(homedir(), ".jobby-jobs", "caffeine-lid-heartbeat");
+/** That guard restores sleep once Caffeine has been quiet this long: long enough to ride out a
+ *  restart or an update of Paseo, short enough that a closed Mac is not left unwatched. */
+export const HEARTBEAT_STALE_MS = 10 * 60_000;
+const NO_GUARD =
+  "could not arm the guard that turns this off (is Caffeine's background item allowed in System Settings → General → Login Items?)";
 
 const ON = ["-a", "disablesleep", "1"] as const;
 const OFF = ["-a", "disablesleep", "0"] as const;
@@ -58,24 +68,26 @@ export function setupScript(rule: string): string {
   ].join("\n");
 }
 
+/** A path as one single-quoted sh word. */
+const shellWord = (path: string) => `'${path.replace(/'/g, "'\\''")}'`;
+
 /**
- * The guard: a LaunchAgent that waits for the deadline, restores sleep and removes itself.
- * RunAtLoad makes launchd start it again at the next login after a reboot, when the wait is
- * whatever is left (or none).
+ * How every guard ends: sleep back on, then it removes itself. Up to half an hour of attempts,
+ * a minute apart; it removes itself only once `pmset -g` shows sleep is back, or when it has
+ * run out of attempts.
  */
-export function guardPlist(untilMs: number): string {
-  const at = Math.ceil(untilMs / 1000);
-  const plist = `'${GUARD_PLIST.replace(/'/g, "'\\''")}'`;
-  // Up to half an hour of attempts, a minute apart; it removes itself only once `pmset -g`
-  // shows sleep is back, or when it has run out of attempts.
-  const script = [
-    `left=$((${at} - $(/bin/date +%s)))`,
-    'if [ "$left" -gt 0 ]; then /bin/sleep "$left"; fi',
+function restoreAndLeave(): string[] {
+  return [
     "i=0",
     `while [ "$i" -lt 30 ]; do ${SUDO} -n ${PMSET} ${OFF.join(" ")}; if ${PMSET} -g | /usr/bin/grep -q 'SleepDisabled[[:space:]]*0'; then break; fi; i=$((i + 1)); /bin/sleep 60; done`,
-    `/bin/rm -f ${plist}`,
+    `/bin/rm -f ${shellWord(GUARD_PLIST)}`,
     `/bin/launchctl bootout gui/$(/usr/bin/id -u)/${GUARD_LABEL}`,
-  ].join("; ");
+  ];
+}
+
+/** A guard's script as a LaunchAgent. RunAtLoad makes launchd start it again at the next
+ *  login after a reboot. One label for every guard: there is one lid mode at a time. */
+function agentPlist(script: string): string {
   const escape = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -88,6 +100,37 @@ export function guardPlist(untilMs: number): string {
     "</dict></plist>",
     "",
   ].join("\n");
+}
+
+/**
+ * The guard of a timer: a LaunchAgent that waits for the deadline, restores sleep and removes
+ * itself. After a reboot the wait is whatever is left (or none).
+ */
+export function guardPlist(untilMs: number): string {
+  const at = Math.ceil(untilMs / 1000);
+  return agentPlist(
+    [`left=$((${at} - $(/bin/date +%s)))`, 'if [ "$left" -gt 0 ]; then /bin/sleep "$left"; fi', ...restoreAndLeave()].join("; "),
+  );
+}
+
+/**
+ * The wait of the guard of lid mode with no end: every `everyS` seconds it looks at when
+ * Caffeine last beat (the heartbeat file's time), and stops waiting once that is `staleS`
+ * seconds ago. Never counted from before the guard's own start, so after a reboot Paseo gets
+ * the same time from login to pick lid mode up again.
+ */
+export function heartbeatWait(heartbeat: string, staleS: number, everyS = 60): string {
+  const file = shellWord(heartbeat);
+  return [
+    "started=$(/bin/date +%s)",
+    `while :; do /bin/sleep ${everyS}; last=$started; if [ -f ${file} ]; then beat=$(/usr/bin/stat -f %m ${file}); if [ "$beat" -gt "$last" ]; then last=$beat; fi; fi; if [ $(($(/bin/date +%s) - $last)) -ge ${staleS} ]; then break; fi; done`,
+  ].join("; ");
+}
+
+/** The guard of lid mode with no end: it waits for Caffeine to go quiet (see heartbeatWait),
+ *  then restores sleep and removes itself. */
+export function heartbeatGuardPlist(heartbeat: string, staleMs: number): string {
+  return agentPlist([heartbeatWait(heartbeat, Math.ceil(staleMs / 1000)), ...restoreAndLeave()].join("; "));
 }
 
 /** `SleepDisabled 1` in `pmset -g`; null when the line is not there. */
@@ -181,6 +224,11 @@ export interface LidDeps {
   /** Arms the guard to restore sleep at `untilMs`, replacing any earlier one; false if it
    *  could not be armed. */
   startGuard(untilMs: number): Promise<boolean>;
+  /** Arms the guard of lid mode with no end, which restores sleep once `beat` has gone quiet
+   *  (see heartbeatGuardPlist), replacing any earlier one; false if it could not be armed. */
+  startHeartbeatGuard(): Promise<boolean>;
+  /** Tells that guard Caffeine is still watching. */
+  beat(): Promise<void>;
   /** Disarms the guard, if there is one. */
   stopGuard(): Promise<void>;
   read(): Promise<LidStored>;
@@ -296,6 +344,25 @@ export function createLid(deps: LidDeps): Lid {
     log(`caffeine: lid mode off (${why})`);
   }
 
+  /**
+   * The guard of whatever runs now, after an attempt at something else failed: arming a guard
+   * boots the one before out first, so it may be gone. A timer gets its deadline back, no end
+   * its heartbeat, off none. A session whose guard cannot come back is ended rather than left
+   * without one.
+   */
+  async function rearm(): Promise<void> {
+    if (!running()) {
+      await deps.stopGuard().catch(() => undefined);
+      return;
+    }
+    const armed = stored.forever ? await deps.startHeartbeatGuard() : await deps.startGuard(deadline() + GUARD_GRACE_MS);
+    if (!armed) await restore("guard could not be armed");
+  }
+
+  /** Tells the guard of lid mode with no end that Caffeine is still watching. A beat that
+   *  cannot be written lets the guard step in, which is the safe way round. */
+  const beat = () => deps.beat().catch((failure) => log(`caffeine: lid heartbeat failed: ${String(failure)}`));
+
   return {
     start: () =>
       serial(async () => {
@@ -304,8 +371,14 @@ export function createLid(deps: LidDeps): Lid {
         await readSleep();
         if (!running()) return;
         if (stored.forever) {
-          // Turned back on while Paseo was down: nothing to keep.
-          if (on === false) await save(OFF_STATE);
+          // Turned back on while Paseo was down, by hand or by the guard: nothing to keep.
+          if (on === false) {
+            await deps.stopGuard().catch(() => undefined);
+            await save(OFF_STATE);
+            return;
+          }
+          // Still running: re-arm the guard, in case the one from before did not survive.
+          if (!(await deps.startHeartbeatGuard())) await restore("guard could not be armed");
           return;
         }
         // A deadline that passed while Paseo was down: put sleep back now.
@@ -318,6 +391,8 @@ export function createLid(deps: LidDeps): Lid {
       serial(async () => {
         await readSleep();
         if (!running()) return;
+        // The guard of lid mode with no end waits for this.
+        if (stored.forever) await beat();
         if (!stored.forever && deadline() <= now()) return restore("time is up");
         if (battery !== null && !battery.external && battery.percent < LID_LOW_BATTERY) {
           await restore(`battery at ${battery.percent}%`);
@@ -348,17 +423,24 @@ export function createLid(deps: LidDeps): Lid {
           return;
         }
         if (minutes === "forever") {
-          // No end, so no guard: the battery and heat checks, and a person, turn it off. A
-          // timer's guard is stopped only once sleep is switched off for good, so a failure
-          // here leaves the timed session as it was.
+          // The guard first, as under a timer: sleep is never switched off without something
+          // set to bring it back. With no end to wait for, this one waits for Caffeine to go
+          // quiet and restores sleep then; while Caffeine runs, the battery and heat checks
+          // and a person turn it off. A failure leaves what ran before as it was, its guard
+          // included.
+          if (!(await deps.startHeartbeatGuard())) {
+            await rearm();
+            error = NO_GUARD;
+            return;
+          }
           try {
             await pmset(ON);
           } catch (failure) {
+            await rearm();
             error = failure instanceof Error ? failure.message : String(failure);
             await readSleep();
             return;
           }
-          await deps.stopGuard().catch(() => undefined);
           error = "";
           // A lid already closed when lid mode comes on counts as just closed.
           wasClosed = false;
@@ -371,14 +453,15 @@ export function createLid(deps: LidDeps): Lid {
         const until = untilMs ?? now() + minutes * 60_000;
         // The guard first: sleep is never switched off without something set to bring it back.
         if (!(await deps.startGuard(until + GUARD_GRACE_MS))) {
-          error = "could not arm the timer that turns this off (is Caffeine's background item allowed in System Settings → General → Login Items?)";
+          await rearm();
+          error = NO_GUARD;
           return;
         }
         try {
           await pmset(ON);
         } catch (failure) {
+          await rearm();
           error = failure instanceof Error ? failure.message : String(failure);
-          await deps.stopGuard().catch(() => undefined);
           await readSleep();
           return;
         }
@@ -454,6 +537,22 @@ function runCommand(command: string, args: readonly string[]): Promise<{ code: n
 
 /** The real thing: execFile, osascript, a detached sh, and `ps` to recognise our own guard. */
 export function systemLidDeps(log: (line: string) => void): LidDeps {
+  /** Loads `plist` as the guard, booting out any earlier one first; false if launchd refused it. */
+  async function arm(plist: string): Promise<boolean> {
+    try {
+      const domain = `gui/${process.getuid?.() ?? userInfo().uid}`;
+      await runCommand("/bin/launchctl", ["bootout", `${domain}/${GUARD_LABEL}`]);
+      await mkdir(dirname(GUARD_PLIST), { recursive: true });
+      await writeFile(GUARD_PLIST, plist, { mode: 0o644 });
+      const loaded = await runCommand("/bin/launchctl", ["bootstrap", domain, GUARD_PLIST]);
+      if (loaded.code !== 0) log(`caffeine: lid guard did not load (exit ${loaded.code})`);
+      return loaded.code === 0;
+    } catch (failure) {
+      log(`caffeine: lid guard failed: ${String(failure)}`);
+      return false;
+    }
+  }
+
   return {
     run: runCommand,
     admin: async (script) => {
@@ -473,19 +572,11 @@ export function systemLidDeps(log: (line: string) => void): LidDeps {
         await rm(dir, { recursive: true, force: true });
       }
     },
-    startGuard: async (untilMs) => {
-      try {
-        const domain = `gui/${process.getuid?.() ?? userInfo().uid}`;
-        await runCommand("/bin/launchctl", ["bootout", `${domain}/${GUARD_LABEL}`]);
-        await mkdir(dirname(GUARD_PLIST), { recursive: true });
-        await writeFile(GUARD_PLIST, guardPlist(untilMs), { mode: 0o644 });
-        const loaded = await runCommand("/bin/launchctl", ["bootstrap", domain, GUARD_PLIST]);
-        if (loaded.code !== 0) log(`caffeine: lid guard did not load (exit ${loaded.code})`);
-        return loaded.code === 0;
-      } catch (failure) {
-        log(`caffeine: lid guard failed: ${String(failure)}`);
-        return false;
-      }
+    startGuard: (untilMs) => arm(guardPlist(untilMs)),
+    startHeartbeatGuard: () => arm(heartbeatGuardPlist(HEARTBEAT_FILE, HEARTBEAT_STALE_MS)),
+    beat: async () => {
+      await mkdir(dirname(HEARTBEAT_FILE), { recursive: true });
+      await writeFile(HEARTBEAT_FILE, `${new Date().toISOString()}\n`);
     },
     stopGuard: async () => {
       const domain = `gui/${process.getuid?.() ?? userInfo().uid}`;

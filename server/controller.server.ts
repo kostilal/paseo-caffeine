@@ -128,10 +128,11 @@ export function createController(deps: ControllerDeps): Controller {
   /**
    * Lid mode with no end that neither the mode nor the switch asks for any more: a turn-off
    * that did not take, a timer picked under On that could not take it over and has since run
-   * out, a change cut short by a restart. It has no deadline and no guard, so nothing else
-   * would ever end it, and every tick tries. Turning it off is the safe direction; a tick
-   * never turns lid mode on. Queued with the changes a person makes and decided when its
-   * turn comes, so it cannot undo an On picked in the meantime.
+   * out, a change cut short by a restart. It has no deadline, and its guard only steps in once
+   * Caffeine has gone quiet, so while Caffeine runs nothing else would end it: every tick tries.
+   * Turning it off is the safe direction; a tick never turns lid mode on. Queued with the
+   * changes a person makes and decided when its turn comes, so it cannot undo an On picked in
+   * the meantime.
    */
   function dropUnwantedLid(): void {
     if (!deps.lid?.status().forever) return;

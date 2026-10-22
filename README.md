@@ -36,9 +36,13 @@ removes itself; after a reboot it runs again at login. macOS may announce it as 
 background item (shown as `sh` in System Settings → General → Login Items); switched off
 there, lid mode refuses to start, since nothing would bring sleep back. Caffeine only lets
 go of the deadline once `pmset -g` confirms sleep is back, so a failed attempt is retried.
-Under **On** lid mode has no end and no guard: it lasts until you turn it off (another mode,
-the switch, the header, or Sleep now), the battery drops below 20% off the charger, or macOS
-reports the Mac running hot (`pmset -g therm`). The heat check applies under the timer too.
+Under **On** lid mode has no end, so its guard waits for Caffeine rather than a deadline: it
+lasts until you turn it off (another mode, the switch, the header, or Sleep now), the battery
+drops below 20% off the charger, macOS reports the Mac running hot (`pmset -g therm`), or
+Caffeine goes quiet for ten minutes (Paseo quit or crashed, the plugin disabled or failing to
+load), when the guard puts sleep back. Caffeine beats every thirty seconds, into
+`~/.jobby-jobs/caffeine-lid-heartbeat`; after a reboot the ten minutes count from login, so a
+Paseo that starts at login picks lid mode up again. The heat check applies under the timer too.
 Lid mode that ended on a low battery or heat, or was turned off by Sleep now, the header
 or by hand, stays off until you ask for it again: while the switch is on and a timer or On
 runs, the card says who turned it off and that a closed lid now sleeps the Mac, next to
@@ -47,9 +51,10 @@ While lid mode is on, closing the lid puts the screen to sleep (`pmset displaysl
 checked once a minute while the lid stays shut, so a panel woken under a closed lid goes dark
 again; not with an external monitor attached, which it would blank too (also one plugged in after the lid closed); with Screen Sharing into a closed Mac the shared
 screen goes dark every minute too). Lid mode switches sleep off system-wide. Battery and heat
-are watched only while Paseo runs; with Paseo closed, lid mode under On stays on until you turn it off
-(macOS's own low-battery and thermal shutdowns still apply). By hand: `sudo pmset -a
-disablesleep 0`. To undo the permission: `sudo rm /etc/sudoers.d/paseo-caffeine`.
+are watched only while Paseo runs, which is why both guards keep working without it: a timer's
+until its deadline, On's for ten minutes (macOS's own low-battery and thermal shutdowns still
+apply). By hand: `sudo pmset -a disablesleep 0`. To undo the permission:
+`sudo rm /etc/sudoers.d/paseo-caffeine`.
 
 The surface also shows the Mac's own battery: charge, whether the charger is in, and how
 long the charge has left — or how long until it is full. On the charger it also shows the
@@ -80,8 +85,9 @@ says what the timer and On mean, not which of them runs. Both survive a mode cha
 spent timer alike. The controller turns lid mode on only when a person changes the mode or
 the switch, never on a tick. A tick only ever turns it off, and only lid mode with no end
 that neither the mode nor the switch asks for any more (a turn-off that did not take, or a
-timer picked under On that could not arm its guard and has run out): it has no deadline and
-no guard, so nothing else would end it.
+timer picked under On that could not take it over and has run out): it has no deadline, and
+its guard only steps in once Caffeine has gone quiet, so while Caffeine runs nothing else would
+end it.
 
 ## Sleeping, and getting back
 
