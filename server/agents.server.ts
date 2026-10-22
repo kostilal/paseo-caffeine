@@ -23,7 +23,9 @@ export function createAgentsProbe(): AgentsProbe {
       if (!remembered) return null;
       try {
         const result = await remembered.agents.list();
-        return result.entries.filter((entry) => entry.agent.status === "running").length;
+        // Only the part read here: the daemon's own type is in @getpaseo/client, which this
+        // plugin no longer imports (it broke the build on Paseo 0.12.0).
+        return result.entries.filter((entry: { agent: { status: string } }) => entry.agent.status === "running").length;
       } catch {
         // A daemon that will not answer is "unknown", which the policy already
         // resolves towards staying awake for the grace period.
