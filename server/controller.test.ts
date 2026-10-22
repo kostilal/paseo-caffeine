@@ -6,10 +6,15 @@ import type { Stored } from "./policy.ts";
 import type { LidStatus } from "../shared/caffeine.shared.ts";
 import { GRACE_MS } from "./policy.ts";
 
-/** Lid mode as the controller sees it: what was asked of it, and the status that follows. */
-function fakeLid(delayMs = 0) {
+/**
+ * Lid mode as the controller sees it: what was asked of it, and the status that follows.
+ * `fail` makes it fail the way the real one does, leaving lid mode as it was: a timed length
+ * whose guard could not be armed, or the next `disable` turn-offs that pmset refused.
+ */
+function fakeLid(delayMs = 0, fail: { timed?: boolean; disable?: number } = {}) {
   const calls: string[] = [];
   const pause = () => new Promise((resolve) => setTimeout(resolve, delayMs));
+  let offsToFail = fail.disable ?? 0;
   let state: LidStatus = { on: false, until: "", minutes: 0, forever: false, ended: "", stopped: "", setup: "ready", error: "" };
   return {
     calls,
@@ -19,12 +24,17 @@ function fakeLid(delayMs = 0) {
       // Switching lid mode takes real time (sudo, pmset); the state lands at the end.
       if (delayMs > 0) await pause();
       calls.push(length === "forever" ? "forever" : `until ${new Date(untilMs ?? 0).toISOString()}`);
+      if (length !== "forever" && fail.timed) return;
       state = length === "forever"
         ? { ...state, on: true, forever: true, until: "", minutes: 0 }
         : { ...state, on: true, forever: false, until: new Date(untilMs ?? 0).toISOString(), minutes: length };
     },
     disable: async (why: string) => {
       calls.push(`off: ${why}`);
+      if (offsToFail > 0) {
+        offsToFail -= 1;
+        return;
+      }
       state = { ...state, on: false, forever: false, until: "", minutes: 0 };
     },
     /** Lid mode ending by itself, the way a low battery ends it. */
@@ -33,6 +43,9 @@ function fakeLid(delayMs = 0) {
     },
   };
 }
+
+/** A tick queues its turn-off behind the changes a person makes; this lets it run. */
+const settled = () => new Promise((resolve) => setImmediate(resolve));
 
 function fakes(initial: Stored, running: () => number | null, lid?: ReturnType<typeof fakeLid>) {
   let stored = initial;
@@ -375,14 +388,67 @@ test("lid mode that ended by itself is not turned back on by a tick", async () =
   f.controller.stop();
 });
 
-test("lid mode Caffeine did not start is left alone by a mode change", async () => {
+test("lid mode Caffeine did not start is left alone by a mode change and by a tick", async () => {
   const lid = fakeLid();
   const f = fakes({ mode: "on", until: "", keepDisplay: false, lidClosed: true }, () => 0, lid);
   // Sleep switched off by hand: on, with no deadline and no end of Caffeine's.
   (lid.status() as { on: boolean }).on = true;
   await f.controller.start();
   await f.controller.set({ mode: "off" });
+  await f.controller.tick();
+  await settled();
   assert.deepEqual(lid.calls, []);
+  f.controller.stop();
+});
+
+test("lid mode with no end ends on the tick after the timer that could not take it over", async () => {
+  // A timer picked under On whose guard could not be armed leaves lid mode on with no end.
+  // Nothing else would ever end it: no deadline, no guard.
+  const lid = fakeLid(0, { timed: true });
+  const f = fakes({ mode: "off", until: "", keepDisplay: false, lidClosed: true }, () => 0, lid);
+  await f.controller.start();
+  await f.controller.set({ mode: "on" });
+  await f.controller.set({ mode: "timer", minutes: 30 });
+  await f.controller.tick();
+  await settled();
+  assert.equal(lid.status().forever, true, "while the timer runs, the switch still asks for lid mode");
+  f.advance(31 * 60_000);
+  await f.controller.tick();
+  await settled();
+  assert.equal(f.stored.mode, "off");
+  assert.equal(lid.status().forever, false);
+  assert.deepEqual(lid.calls, ["forever", "until 2026-09-09T18:30:00.000Z", "off: mode off"]);
+  f.controller.stop();
+});
+
+test("a turn-off that did not take is tried again on the ticks until it does, then no more", async () => {
+  const lid = fakeLid(0, { disable: 2 });
+  const f = fakes({ mode: "off", until: "", keepDisplay: false, lidClosed: true }, () => 0, lid);
+  await f.controller.start();
+  await f.controller.set({ mode: "on" });
+  await f.controller.set({ mode: "off" });
+  for (let i = 0; i < 4; i += 1) {
+    f.advance(30_000);
+    await f.controller.tick();
+    await settled();
+  }
+  assert.equal(lid.status().forever, false);
+  assert.deepEqual(lid.calls, ["forever", "off: mode off", "off: mode off", "off: mode off"], "two refused, the third took");
+  f.controller.stop();
+});
+
+test("a tick leaves lid mode with no end alone while On and the switch ask for it", async () => {
+  const lid = fakeLid();
+  const f = fakes({ mode: "off", until: "", keepDisplay: false, lidClosed: true }, () => 0, lid);
+  await f.controller.start();
+  await f.controller.set({ mode: "on" });
+  for (let i = 0; i < 3; i += 1) {
+    f.advance(30_000);
+    await f.controller.tick();
+    await settled();
+  }
+  assert.equal(lid.status().forever, true);
+  assert.deepEqual(lid.calls, ["forever"]);
   f.controller.stop();
 });
 

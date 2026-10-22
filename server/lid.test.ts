@@ -15,9 +15,13 @@ import {
   parseLidClosed,
   externalDisplay,
 } from "./lid.server.ts";
+import { createController } from "./controller.server.ts";
+import type { Stored } from "./policy.ts";
 
 const T0 = Date.parse("2026-10-20T12:00:00Z");
 const OFF: LidStored = { until: "", minutes: 0, forever: false };
+/** The controller queues its turn-off behind the changes a person makes; this lets it run. */
+const settled = () => new Promise((resolve) => setImmediate(resolve));
 
 /** A Mac in miniature: the sudo rule, the SleepDisabled switch, the guard, and every call. */
 function fakeMac(
@@ -512,6 +516,35 @@ test("a failed switch from a timer to always keeps the timer's guard", async () 
   await lid.enable("forever");
   assert.notEqual(mac.guard(), null);
   assert.equal(mac.stored().forever, false);
+});
+
+test("with no guard to be had, lid mode under On still ends with the timer picked after it", async () => {
+  // The background item switched off in Login Items: On's lid mode needs no guard and comes on,
+  // the timer's cannot arm one and leaves it as it was. The controller's tick ends it.
+  const mac = fakeMac({ guardFails: true });
+  const lid = createLid(mac.deps);
+  let stored: Stored = { mode: "off", until: "", keepDisplay: false, lidClosed: true };
+  const controller = createController({
+    read: async () => stored,
+    write: async (next) => void (stored = next),
+    keeper: { active: () => false, error: () => "", pid: () => null, hold: () => undefined, release: () => undefined },
+    runningCount: async () => 0,
+    now: () => mac.deps.now!(),
+    tickMs: 60 * 60_000,
+    lid,
+  });
+  await lid.start();
+  await controller.start();
+  await controller.set({ mode: "on" });
+  assert.equal(mac.disabled(), true);
+  await controller.set({ mode: "timer", minutes: 30 });
+  assert.equal(mac.disabled(), true, "the timer could not take lid mode over");
+  mac.advance(31 * 60_000);
+  await controller.tick();
+  await settled();
+  assert.equal(stored.mode, "off");
+  assert.equal(mac.disabled(), false, "the timer is over: sleep is back");
+  controller.stop();
 });
 
 test("the lid's state is read from ioreg", () => {

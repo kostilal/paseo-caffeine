@@ -77,8 +77,11 @@ down with it. Timer holds add `-t` as a second guard, and **Keep display on** ad
 **Keep display on** and **Lid can close** ride on their own RPC that takes a patch, rather
 than on the mode: the display is a property of the machine you sit at, and the lid switch
 says what the timer and On mean, not which of them runs. Both survive a mode change and a
-spent timer alike. The controller turns lid mode on and off to match only when a person
-changes the mode or the switch, never on a tick.
+spent timer alike. The controller turns lid mode on only when a person changes the mode or
+the switch, never on a tick. A tick only ever turns it off, and only lid mode with no end
+that neither the mode nor the switch asks for any more (a turn-off that did not take, or a
+timer picked under On that could not arm its guard and has run out): it has no deadline and
+no guard, so nothing else would end it.
 
 ## Sleeping, and getting back
 
