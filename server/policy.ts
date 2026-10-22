@@ -17,6 +17,8 @@ export interface Stored {
   until: string;
   /** Hold the display awake too, rather than letting it sleep under a waking system. */
   keepDisplay: boolean;
+  /** The timer and On let the lid close too: lid mode for as long as they last. */
+  lidClosed: boolean;
 }
 
 export interface Decision {
@@ -27,7 +29,7 @@ export interface Decision {
 }
 
 export function defaultStored(): Stored {
-  return { mode: "off", until: "", keepDisplay: false };
+  return { mode: "off", until: "", keepDisplay: false, lidClosed: false };
 }
 
 export function untilForMinutes(nowMs: number, minutes: number): string {
@@ -43,9 +45,9 @@ export function nextBusyUntil(previousMs: number, running: number | null, nowMs:
   return running !== null && running > 0 ? nowMs + GRACE_MS : previousMs;
 }
 
-/** Off, but still remembering the display switch, which has nothing to do with the mode. */
+/** Off, but still remembering the display and lid switches, which outlive any one timer. */
 function offKeeping(stored: Stored): Stored {
-  return { ...defaultStored(), keepDisplay: stored.keepDisplay };
+  return { ...defaultStored(), keepDisplay: stored.keepDisplay, lidClosed: stored.lidClosed };
 }
 
 export function decide(stored: Stored, nowMs: number, busyUntilMs: number): Decision {

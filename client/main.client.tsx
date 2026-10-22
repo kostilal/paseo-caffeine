@@ -5,26 +5,25 @@ import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Animated, Linking, Pressable, ScrollView, Text, View } from "react-native";
-import { SLEEP_DELAY_MS, type Battery, type LidMinutes, type SetInput, type SetOptionsInput, type Status, getStatus, setLid, setMode, setOptions, setupLid, sleepNow } from "../shared/caffeine.shared.ts";
+import { SLEEP_DELAY_MS, type Battery, type SetInput, type SetOptionsInput, type Status, getStatus, runWarmup, setLid, setMode, setOptions, setWarmup, setupLid, sleepNow } from "../shared/caffeine.shared.ts";
 import { type Strings, detectAppLocale, formatRemaining, t } from "./i18n.ts";
 import { SILENCE_TIMEOUT_MS, type SleepEvent, type SleepPhase, isSleepInFlight, nextSleepPhase } from "./sleep-phase.ts";
 
 const QUERY_KEY = ["caffeine", "status"] as const;
 const TIMER_MINUTES = [30, 60, 120, 180, 480, 720] as const;
 type TimerMinutes = (typeof TIMER_MINUTES)[number];
-const LID_MINUTES: readonly LidMinutes[] = [30, 60, 120];
 
 /**
  * The surface fits a phone without scrolling, and what buys the room is the shape rather
- * than the size: Off and On share a row, state and battery share a card, and no section
+ * than the size: Off, On and Sleep now share a row, state and battery share a card, and no section
  * label captions a control that already says what it is. With those, compact only has to
  * be a little tighter than the desktop — shrinking the type as well left half the screen
- * empty. While-agents-work and Timer keep rows of their own: one has a sentence that
- * should not be clipped, the other six chips that want the width.
+ * empty. While-agents-work shares a row with the display switch, and Timer keeps one of
+ * its own for the six chips that want the width.
  */
 const METRICS = {
-  compact: { gutter: 16, gap: 14, pad: 16, icon: 44, title: 22, tile: "48%" as const },
-  roomy: { gutter: 24, gap: 16, pad: 16, icon: 44, title: 24, tile: "48%" as const },
+  compact: { gutter: 16, gap: 14, pad: 16, icon: 44, title: 22, tile: "30%" as const },
+  roomy: { gutter: 24, gap: 16, pad: 16, icon: 44, title: 24, tile: "30%" as const },
 };
 
 /** Which chip a running timer belongs to: the one whose length is nearest. */
@@ -61,6 +60,11 @@ function Card({ theme, pad, children, style }: { theme: PluginTheme; pad: number
   );
 }
 
+/** Watts as a person reads them off a charger: whole above ten, one decimal below. */
+function formatWatts(watts: number): string {
+  return `${watts >= 10 ? Math.round(watts) : watts.toFixed(1)} W`;
+}
+
 /** Green with room to spare, amber when it is getting thin, red near empty. */
 function batteryColour(battery: Battery, theme: PluginTheme): string {
   if (battery.external) return theme.colors.statusSuccess;
@@ -84,49 +88,64 @@ function BatteryRow({ battery, theme, strings }: { battery: Battery; theme: Plug
   else if (battery.charged) detail = strings.batteryCharged;
   else detail = eta ? strings.batteryUntilEmpty(eta) : strings.batteryNoEstimate;
 
+  // On the charger, what it is pulling now sits next to the charge, and what the charger
+  // is rated for and how much of it reaches the battery go on a quieter line underneath.
+  const intake = battery.external && battery.inputWatts !== null ? formatWatts(battery.inputWatts) : null;
+  const flow: string[] = [];
+  if (battery.external && battery.adapterWatts !== null) flow.push(strings.wattsAdapter(formatWatts(battery.adapterWatts)));
+  if (battery.external && battery.batteryWatts !== null && battery.batteryWatts > 0) {
+    flow.push(strings.wattsIntoBattery(formatWatts(battery.batteryWatts)));
+  }
+
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-      <View style={{ flexDirection: "row", alignItems: "center" }}>
-        <View
-          style={{
-            width: 64,
-            height: 30,
-            borderRadius: 8,
-            borderWidth: 2,
-            borderColor: theme.colors.border,
-            padding: 3,
-            justifyContent: "center",
-          }}
-        >
-          {/* Never a bare sliver: a one percent charge still shows as something. */}
+    <View style={{ gap: 6 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
           <View
             style={{
-              width: `${Math.max(4, battery.percent)}%`,
-              height: "100%",
-              borderRadius: 3,
-              backgroundColor: colour,
+              width: 64,
+              height: 30,
+              borderRadius: 8,
+              borderWidth: 2,
+              borderColor: theme.colors.border,
+              padding: 3,
+              justifyContent: "center",
+            }}
+          >
+            {/* Never a bare sliver: a one percent charge still shows as something. */}
+            <View
+              style={{
+                width: `${Math.max(4, battery.percent)}%`,
+                height: "100%",
+                borderRadius: 3,
+                backgroundColor: colour,
+              }}
+            />
+          </View>
+          <View
+            style={{
+              width: 3,
+              height: 10,
+              marginLeft: 1,
+              borderTopRightRadius: 2,
+              borderBottomRightRadius: 2,
+              backgroundColor: theme.colors.border,
             }}
           />
         </View>
-        <View
-          style={{
-            width: 3,
-            height: 10,
-            marginLeft: 1,
-            borderTopRightRadius: 2,
-            borderBottomRightRadius: 2,
-            backgroundColor: theme.colors.border,
-          }}
-        />
-      </View>
 
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flex: 1 }}>
-        <Text style={{ color: theme.colors.foreground, fontSize: 24, fontWeight: "700" }}>{`${battery.percent}%`}</Text>
-        {battery.charging ? <Icon name="Zap" size={15} color={colour} /> : null}
-        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13, flex: 1, textAlign: "right" }}>
-          {`${battery.external ? strings.powerAC : strings.powerBattery} · ${detail}`}
-        </Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flex: 1 }}>
+          <Text style={{ color: theme.colors.foreground, fontSize: 24, fontWeight: "700" }}>{`${battery.percent}%`}</Text>
+          {battery.charging ? <Icon name="Zap" size={15} color={colour} /> : null}
+          {intake ? <Text style={{ color: colour, fontSize: 15, fontWeight: "700" }}>{intake}</Text> : null}
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13, flex: 1, textAlign: "right" }}>
+            {`${battery.external ? strings.powerAC : strings.powerBattery} · ${detail}`}
+          </Text>
+        </View>
       </View>
+      {flow.length > 0 ? (
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, textAlign: "right" }}>{flow.join(" · ")}</Text>
+      ) : null}
     </View>
   );
 }
@@ -223,7 +242,7 @@ function ModeCard({
   theme: PluginTheme;
   onPress?: () => void;
   children?: React.ReactNode;
-  /** Two across on a phone, four across on a desktop. */
+  /** A share of the row: Off, On and Sleep now sit three across. */
   tile: `${number}%`;
   /** Breathes the glyph while something is in flight; steady when absent. */
   iconPulse?: Animated.Value;
@@ -377,71 +396,134 @@ function useSleepTile(poll: { dataUpdatedAt: number; errorUpdatedAt: number; isE
  * The address is the Mac's own on the local network, so the link only carries from
  * inside the house or through the VPN that puts you there.
  */
+/** Who turned lid mode off, in words; a reason this client does not know reads as plain "off". */
+function pausedReason(lid: Status["lid"], strings: Strings): string {
+  if (lid.ended === "battery") return strings.lidEndedBattery;
+  if (lid.ended === "heat") return strings.lidEndedHeat;
+  if (lid.stopped === "sleep") return strings.lidStoppedSleep;
+  if (lid.stopped === "off") return strings.lidStoppedOff;
+  if (lid.stopped === "manual") return strings.lidStoppedManual;
+  return strings.lidStoppedUnknown;
+}
+
 /**
- * Lid mode's tile: the one switch that changes a system setting rather than holding the Mac
- * from inside a process, so it always runs on a clock and shows how much is left. Before the
- * one-time permission is in place it offers that instead, in one press.
+ * The timer's lid switch: with it on, the timer and On also let the lid close, for exactly as
+ * long as they last. It is the one control that changes a system setting rather than holding
+ * the Mac from inside a process, so it says what it is doing right now. Before the one-time
+ * permission is in place it offers that instead, in one press.
  */
-function LidCard({
+function LidSwitch({
   status,
   theme,
   strings,
   now,
   busy,
-  onPick,
-  onStop,
+  onToggle,
   onSetup,
+  onResume,
 }: {
   status: Status;
   theme: PluginTheme;
   strings: Strings;
   now: number;
   busy: boolean;
-  onPick(minutes: LidMinutes): void;
-  onStop(): void;
+  onToggle(lidClosed: boolean): void;
   onSetup(): void;
+  onResume(): void;
 }) {
   const { lid } = status;
-  const remainingMs = lid.until === "" ? 0 : Math.max(0, Date.parse(lid.until) - now);
-  const lengthMs = lid.minutes * 60_000;
   const needsSetup = lid.setup === "needs-setup";
-  const detail =
-    needsSetup && !lid.on
-      ? strings.lidSetup
-      : lid.on
-        ? lid.until === ""
-          ? strings.lidOnNoTimer
-          : strings.lidOn(formatRemaining(remainingMs, strings))
-        : strings.lidOff;
+  const ours = lid.forever || lid.until !== "";
+  const remainingMs = lid.until === "" ? 0 : Math.max(0, Date.parse(lid.until) - now);
+  // The switch is on and a timer or On is running, yet lid mode is off: Sleep now, the header,
+  // a low battery or heat turned it off, and nothing turns it back on by itself. Said plainly,
+  // with a way back, because a closed lid now sleeps the Mac.
+  const paused = !needsSetup && !lid.on && status.lidClosed && (status.mode === "timer" || status.mode === "on");
+  let detail: string;
+  if (needsSetup && !lid.on) detail = strings.lidSetup;
+  else if (lid.on && !ours) detail = strings.lidOnNoTimer;
+  else if (lid.on) detail = lid.forever ? strings.lidOnForever : strings.lidOn(formatRemaining(remainingMs, strings));
+  else if (paused) detail = `${pausedReason(lid, strings)} ${strings.lidPaused}`;
+  else detail = status.lidClosed ? strings.lidIdle : strings.lidOff;
   const failed = lid.error !== "" && lid.error !== "needs-setup" ? strings.lidFailed(lid.error) : "";
+  // When paused the reason is already the detail; a second line would say it twice.
+  const endedNote = lid.on || paused ? "" : lid.ended === "heat" ? strings.lidEndedHeat : lid.ended === "battery" ? strings.lidEndedBattery : "";
+  return (
+    <View style={{ gap: 6, marginTop: 6, paddingTop: 10, borderTopWidth: 1, borderTopColor: theme.colors.border }}>
+      {/* Presses are ignored while one is in flight: a "turn off" overtaken by a "turn on" is
+          exactly the mix-up this switch cannot afford. */}
+      <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap", alignItems: "center", opacity: busy ? 0.6 : 1 }}>
+        <Icon name={lid.on ? "LaptopMinimalCheck" : "LaptopMinimal"} size={16} color={lid.on ? theme.colors.accent : theme.colors.foregroundMuted} />
+        {/* Before the permission the switch is offered only to turn it off: switching it on
+            would do nothing until the permission is there. */}
+        {needsSetup ? <Chip label={strings.lidSetupButton} selected={false} theme={theme} onPress={() => (busy ? undefined : onSetup())} /> : null}
+        {!needsSetup || status.lidClosed ? (
+          <Chip label={strings.lidLabel} selected={status.lidClosed} theme={theme} onPress={() => (busy ? undefined : onToggle(!status.lidClosed))} />
+        ) : null}
+        {paused ? <Chip label={strings.lidResume} selected={false} theme={theme} onPress={() => (busy ? undefined : onResume())} /> : null}
+      </View>
+      <Text style={{ color: paused ? theme.colors.statusWarning : theme.colors.foregroundMuted, fontSize: 12 }}>{detail}</Text>
+      {endedNote !== "" ? <Text style={{ color: theme.colors.statusWarning, fontSize: 12 }}>{endedNote}</Text> : null}
+      {failed !== "" ? <Text style={{ color: theme.colors.statusDanger ?? theme.colors.foregroundMuted, fontSize: 12 }}>{failed}</Text> : null}
+    </View>
+  );
+}
 
+/** "HH:MM" moved by `minutes`, wrapping round midnight. */
+function shiftTime(time: string, minutes: number): string {
+  const [hours, mins] = time.split(":").map(Number);
+  const total = ((((hours ?? 0) * 60 + (mins ?? 0) + minutes) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
+/** A local clock time, "HH:MM", for an RFC 3339 instant. */
+function clockOf(iso: string): string {
+  const at = new Date(iso);
+  return `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+}
+
+/**
+ * Session warm-up's tile: the hour (half-hour steps), on/off, and a press to warm up now. The
+ * detail says when the window will reset, five hours after the hour.
+ */
+function WarmupCard({
+  status,
+  theme,
+  strings,
+  busy,
+  onSet,
+  onRun,
+}: {
+  status: Status;
+  theme: PluginTheme;
+  strings: Strings;
+  busy: boolean;
+  onSet(patch: { enabled?: boolean; time?: string }): void;
+  onRun(): void;
+}) {
+  const { warmup } = status;
+  const detail = warmup.enabled ? strings.warmupOn(warmup.time, shiftTime(warmup.time, 300)) : strings.warmupOff;
+  const results =
+    warmup.results.length === 0 ? strings.warmupNone : warmup.results.map((r) => `${r.login} ${r.ok ? "✓" : `✗ ${r.error}`}`).join(" · ");
+  const ignoreWhileBusy = (action: () => void) => () => (busy || warmup.running ? undefined : action());
   return (
     <View style={{ flexDirection: "row" }}>
-      <ModeCard icon={lid.on ? "LaptopMinimalCheck" : "LaptopMinimal"} title={strings.lidLabel} detail={detail} selected={lid.on} theme={theme} tile="100%">
-        {lid.on && lid.until !== "" && lengthMs > 0 ? (
-          <View style={{ height: 3, borderRadius: 2, backgroundColor: theme.colors.border, overflow: "hidden", marginTop: 4 }}>
-            <View style={{ height: 3, backgroundColor: theme.colors.accent, width: `${Math.min(100, Math.round((remainingMs / lengthMs) * 100))}%` }} />
-          </View>
-        ) : null}
-        <View style={{ flexDirection: "row", gap: 8, marginTop: 4, flexWrap: "wrap", opacity: busy ? 0.6 : 1 }}>
-          {/* Presses are ignored while one is in flight: a "turn off" overtaken by a "turn on" is
-              exactly the mix-up this tile cannot afford. */}
-          {needsSetup ? (
-            <Chip label={strings.lidSetupButton} selected={false} theme={theme} onPress={() => (busy ? undefined : onSetup())} />
-          ) : (
-            LID_MINUTES.map((minutes) => (
-              <Chip
-                key={minutes}
-                label={formatRemaining(minutes * 60_000, strings)}
-                selected={lid.on && lid.minutes === minutes}
-                theme={theme}
-                onPress={() => (busy ? undefined : onPick(minutes))}
-              />
-            ))
-          )}
-          {lid.on ? <Chip label={strings.lidStop} selected={false} theme={theme} onPress={() => (busy ? undefined : onStop())} /> : null}
+      <ModeCard icon="Sunrise" title={strings.warmupLabel} detail={detail} selected={warmup.enabled} theme={theme} tile="100%">
+        <View style={{ flexDirection: "row", gap: 8, marginTop: 4, flexWrap: "wrap", alignItems: "center", opacity: busy ? 0.6 : 1 }}>
+          <Chip label="−" selected={false} theme={theme} onPress={ignoreWhileBusy(() => onSet({ time: shiftTime(warmup.time, -30) }))} />
+          <Text style={{ color: theme.colors.foreground, fontSize: 15, fontWeight: "600", minWidth: 48, textAlign: "center" }}>{warmup.time}</Text>
+          <Chip label="+" selected={false} theme={theme} onPress={ignoreWhileBusy(() => onSet({ time: shiftTime(warmup.time, 30) }))} />
+          <Chip
+            label={warmup.enabled ? strings.warmupDisable : strings.warmupEnable}
+            selected={warmup.enabled}
+            theme={theme}
+            onPress={ignoreWhileBusy(() => onSet({ enabled: !warmup.enabled }))}
+          />
+          <Chip label={warmup.running ? strings.warmupRunning : strings.warmupNow} selected={false} theme={theme} onPress={ignoreWhileBusy(onRun)} />
         </View>
-        {failed !== "" ? <Text style={{ color: theme.colors.statusDanger ?? theme.colors.foregroundMuted, fontSize: 12 }}>{failed}</Text> : null}
+        {warmup.lastAt !== "" ? (
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{strings.warmupLast(clockOf(warmup.lastAt), results)}</Text>
+        ) : null}
       </ModeCard>
     </View>
   );
@@ -473,8 +555,10 @@ export function CaffeineSurface({ theme, layout }: PluginSurfaceProps) {
   const applyMode = useRpc(setMode);
   const applyOptions = useRpc(setOptions);
   const askSleep = useRpc(sleepNow);
-  const askLid = useRpc(setLid);
+  const askWarmup = useRpc(setWarmup);
+  const askWarmupNow = useRpc(runWarmup);
   const askLidSetup = useRpc(setupLid);
+  const askLid = useRpc(setLid);
   const queryClient = useQueryClient();
 
   const { data, isLoading, isError, dataUpdatedAt, errorUpdatedAt } = useQuery({
@@ -495,8 +579,19 @@ export function CaffeineSurface({ theme, layout }: PluginSurfaceProps) {
     onSuccess: (status) => queryClient.setQueryData(QUERY_KEY, status),
   });
 
-  const lid = useMutation({
-    mutationFn: (input: Parameters<typeof askLid>[0]) => askLid(input),
+  const warmupSet = useMutation({
+    mutationFn: (patch: { enabled?: boolean; time?: string }) => askWarmup(patch),
+    onSuccess: (status) => queryClient.setQueryData(QUERY_KEY, status),
+  });
+
+  // Answers once every login has been warmed up: seconds per account.
+  const warmupRun = useMutation({
+    mutationFn: () => askWarmupNow({}),
+    onSuccess: (status) => queryClient.setQueryData(QUERY_KEY, status),
+  });
+
+  const lidResume = useMutation({
+    mutationFn: () => askLid({ lid: "on" }),
     onSuccess: (status) => queryClient.setQueryData(QUERY_KEY, status),
   });
 
@@ -579,58 +674,11 @@ export function CaffeineSurface({ theme, layout }: PluginSurfaceProps) {
             <ModeCard
               icon="Sun"
               title={strings.on}
-              detail={strings.onDetail}
+              detail={data.lidClosed && data.lid.setup !== "needs-setup" ? strings.onDetailLid : strings.onDetail}
               selected={data.mode === "on"}
               theme={theme}
               tile={m.tile}
               onPress={() => change.mutate({ mode: "on" })}
-            />
-          </View>
-
-          {/* A row each: one has a sentence to finish, the other six chips to lay out.
-              The row is what makes tile="100%" mean a width. ModeCard's flexBasis resolves
-              against its parent's main axis, and the content container's runs down the page,
-              so a card left as a direct child there is stretched to the full scroll height. */}
-          <View style={{ flexDirection: "row" }}>
-            <ModeCard
-              icon="Zap"
-              title={strings.auto}
-              detail={strings.autoDetail}
-              selected={data.mode === "auto"}
-              theme={theme}
-              tile="100%"
-              onPress={() => change.mutate({ mode: "auto" })}
-            />
-          </View>
-
-          <View style={{ flexDirection: "row" }}>
-            <ModeCard icon="Timer" title={strings.timer} detail={strings.timerDetail} selected={data.mode === "timer"} theme={theme} tile="100%">
-              <View style={{ flexDirection: "row", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
-                {TIMER_MINUTES.map((minutes) => (
-                  <Chip
-                    key={minutes}
-                    label={formatRemaining(minutes * 60_000, strings)}
-                    selected={timerMinutes === minutes}
-                    theme={theme}
-                    onPress={() => change.mutate({ mode: "timer", minutes })}
-                  />
-                ))}
-              </View>
-            </ModeCard>
-          </View>
-
-          {/* Tiles rather than SettingsSwitch rows: in half a phone's width the host's switch
-              wraps its label, wraps its hint, and drops the toggle onto a line of its own. These
-              are the same tiles as the modes, and being on is shown the same way — by the border. */}
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: m.gap }}>
-            <ModeCard
-              icon={data.keepDisplay ? "Monitor" : "MonitorOff"}
-              title={strings.displayLabel}
-              detail={strings.displayState(data.keepDisplay)}
-              selected={data.keepDisplay}
-              theme={theme}
-              tile={m.tile}
-              onPress={() => changeOptions.mutate({ keepDisplay: !data.keepDisplay })}
             />
             <ModeCard
               icon={tile.phase === "asleep" ? "MoonStar" : "Moon"}
@@ -656,15 +704,67 @@ export function CaffeineSurface({ theme, layout }: PluginSurfaceProps) {
             </ModeCard>
           </View>
 
-          <LidCard
+          {/* While agents work and the display share a row: one is a mode, the other a switch
+              that rides along with any mode, shown "on" the same way — by the border. A share under half leaves
+              room for the gap down to the narrowest phone, so the two never stack. The timer
+              below keeps a row of its own for its six chips. A row is what makes a tile's share
+              mean a width: ModeCard's flexBasis resolves against its parent's main axis, and the
+              content container's runs down the page, so a card left as a direct child there is
+              stretched to the full scroll height. */}
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: m.gap }}>
+            <ModeCard
+              icon="Zap"
+              title={strings.auto}
+              detail={strings.autoDetail}
+              selected={data.mode === "auto"}
+              theme={theme}
+              tile="45%"
+              onPress={() => change.mutate({ mode: "auto" })}
+            />
+            <ModeCard
+              icon={data.keepDisplay ? "Monitor" : "MonitorOff"}
+              title={strings.displayLabel}
+              detail={strings.displayState(data.keepDisplay)}
+              selected={data.keepDisplay}
+              theme={theme}
+              tile="45%"
+              onPress={() => changeOptions.mutate({ keepDisplay: !data.keepDisplay })}
+            />
+          </View>
+
+          <View style={{ flexDirection: "row" }}>
+            <ModeCard icon="Timer" title={strings.timer} detail={strings.timerDetail} selected={data.mode === "timer"} theme={theme} tile="100%">
+              <View style={{ flexDirection: "row", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
+                {TIMER_MINUTES.map((minutes) => (
+                  <Chip
+                    key={minutes}
+                    label={formatRemaining(minutes * 60_000, strings)}
+                    selected={timerMinutes === minutes}
+                    theme={theme}
+                    onPress={() => change.mutate({ mode: "timer", minutes })}
+                  />
+                ))}
+              </View>
+              <LidSwitch
+                status={data}
+                theme={theme}
+                strings={strings}
+                now={now}
+                busy={changeOptions.isPending || change.isPending || lidSetupRun.isPending || lidResume.isPending}
+                onToggle={(lidClosed) => changeOptions.mutate({ lidClosed })}
+                onSetup={() => lidSetupRun.mutate()}
+                onResume={() => lidResume.mutate()}
+              />
+            </ModeCard>
+          </View>
+
+          <WarmupCard
             status={data}
             theme={theme}
             strings={strings}
-            now={now}
-            busy={lid.isPending || lidSetupRun.isPending}
-            onPick={(minutes) => lid.mutate({ lid: "on", minutes })}
-            onStop={() => lid.mutate({ lid: "off" })}
-            onSetup={() => lidSetupRun.mutate()}
+            busy={warmupSet.isPending || warmupRun.isPending}
+            onSet={(patch) => warmupSet.mutate(patch)}
+            onRun={() => warmupRun.mutate()}
           />
 
           <WakeLink url={data.wakeUrl} theme={theme} strings={strings} />

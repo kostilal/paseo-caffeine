@@ -9,36 +9,52 @@ gives Paseo the same lever with three positions:
 
 | | |
 |---|---|
-| **On** | The Mac does not sleep until you say otherwise. Survives a daemon restart. |
-| **30 min … 12 h** | The Mac does not sleep until the deadline, then the switch goes back to Off by itself. Six lengths: 30 min, 1 h, 2 h, 3 h, 8 h, 12 h. |
+| **On** | The Mac does not sleep until you say otherwise. Survives a daemon restart. With the lid switch on, the lid can close too, with no end. |
+| **30 min … 12 h** | The Mac does not sleep until the deadline, then the switch goes back to Off by itself. Six lengths: 30 min, 1 h, 2 h, 3 h, 8 h, 12 h. With the lid switch on, the lid can close until the same deadline. |
 | **While agents work** | The Mac does not sleep while at least one Paseo agent on this host is running, and for three minutes after the last one went quiet. |
 
-Two more tiles sit under the modes: whether the display is held along with the system,
-and **Sleep now**, which sends the Mac under from wherever you are. Below them is the
-link that wakes it again.
+Off, On and **Sleep now**, which sends the Mac under from wherever you are, share the top
+row; **Keep display on** sits next to While agents work. Below the modes is the link that
+wakes the Mac again.
 
-Only system sleep is held and the display sleeps as usual — unless **Keep the display
-on** is switched on, which holds both. A closed lid still sleeps a MacBook, `caffeinate`
-or not.
+Only system sleep is held and the display sleeps as usual — unless **Keep display on** is
+switched on, which holds both whenever the Mac is held. A closed lid still sleeps a MacBook,
+`caffeinate` or not.
 
-**Lid closed** is the one exception to that, on a clock: 30 min, 1 h or 2 h with the lid
-shut and no display attached. It flips the system's own `pmset disablesleep`, which needs
-root, so the first press offers **Allow on this Mac**: macOS asks for the password (or Touch
+**Lid can close**, the switch on the timer, is the one exception to that. With it on, the
+timer lets the Mac run with the lid shut until its deadline, and On lets it run with no end;
+Off and While agents work turn lid mode off, and the switch stays as it was for next time.
+It flips the system's own `pmset disablesleep`, which needs root, so the first press offers
+**Allow on this Mac**: macOS asks for the password (or Touch
 ID) once, and a sudoers rule allowing exactly `pmset -a disablesleep 1` and `… 0`, checked
-with `visudo` first, goes into `/etc/sudoers.d/paseo-caffeine`. After that the tile works from
-the phone too. Sleep comes back by itself at the deadline, on battery below 20%, and before
-**Sleep now**. A guard does the same even if Paseo is not running by then: a LaunchAgent
-(`~/Library/LaunchAgents/com.paseo.caffeine.lid-guard.plist`) that waits for the deadline,
-restores sleep (retrying for up to half an hour until `pmset -g` confirms it) and removes
-itself; after a reboot it runs again at login. macOS may announce it as a new background item
-(shown as `sh` in System Settings → General → Login Items); switched off there, lid mode refuses
-to start, since nothing would bring sleep back. Caffeine only lets go
-of the deadline once `pmset -g` confirms sleep is back, so a failed attempt is retried. A closed
-Mac that never sleeps in a bag gets hot; that is why there is no open-ended setting. By hand:
-`sudo pmset -a disablesleep 0`. To undo the permission: `sudo rm /etc/sudoers.d/paseo-caffeine`.
+with `visudo` first, goes into `/etc/sudoers.d/paseo-caffeine`. After that the switch works
+from the phone too. Sleep comes back by itself at the deadline, on battery below 20%, and
+before **Sleep now**. A guard does the same even if Paseo is not running by then: a
+LaunchAgent (`~/Library/LaunchAgents/com.paseo.caffeine.lid-guard.plist`) that waits for the
+deadline, restores sleep (retrying for up to half an hour until `pmset -g` confirms it) and
+removes itself; after a reboot it runs again at login. macOS may announce it as a new
+background item (shown as `sh` in System Settings → General → Login Items); switched off
+there, lid mode refuses to start, since nothing would bring sleep back. Caffeine only lets
+go of the deadline once `pmset -g` confirms sleep is back, so a failed attempt is retried.
+Under **On** lid mode has no end and no guard: it lasts until you turn it off (another mode,
+the switch, the header, or Sleep now), the battery drops below 20% off the charger, or macOS
+reports the Mac running hot (`pmset -g therm`). The heat check applies under the timer too.
+Lid mode that ended on a low battery or heat, or was turned off by Sleep now, the header
+or by hand, stays off until you ask for it again: while the switch is on and a timer or On
+runs, the card says who turned it off and that a closed lid now sleeps the Mac, next to
+**Turn back on**, which picks lid mode up for the rest of the timer (or with no end under On).
+While lid mode is on, closing the lid puts the screen to sleep (`pmset displaysleepnow`,
+checked once a minute while the lid stays shut, so a panel woken under a closed lid goes dark
+again; not with an external monitor attached, which it would blank too (also one plugged in after the lid closed); with Screen Sharing into a closed Mac the shared
+screen goes dark every minute too). Lid mode switches sleep off system-wide. Battery and heat
+are watched only while Paseo runs; with Paseo closed, lid mode under On stays on until you turn it off
+(macOS's own low-battery and thermal shutdowns still apply). By hand: `sudo pmset -a
+disablesleep 0`. To undo the permission: `sudo rm /etc/sudoers.d/paseo-caffeine`.
 
 The surface also shows the Mac's own battery: charge, whether the charger is in, and how
-long the charge has left — or how long until it is full.
+long the charge has left — or how long until it is full. On the charger it also shows the
+watts, the way Wattage Connected does: what the Mac is drawing now next to the charge, and
+what the charger is rated for and how much goes into the battery underneath.
 
 ## Installing it
 
@@ -56,12 +72,13 @@ The server half runs `caffeinate -i -s -w <its own pid>` as a child process whil
 policy says so, and re-evaluates every thirty seconds: it asks the daemon how many agents
 are running, reads the battery, moves a busy window, and starts or stops the child. `-w`
 ties the child to the plugin, so a plugin killed without cleanup takes its `caffeinate`
-down with it. Timer holds add `-t` as a second guard, and **Keep the display on** adds
-`-d`.
+down with it. Timer holds add `-t` as a second guard, and **Keep display on** adds `-d`.
 
-**Keep display on** rides on its own RPC that takes a patch, rather than on the mode: it
-is orthogonal to why the Mac is being held, and it survives a mode change and a spent
-timer alike.
+**Keep display on** and **Lid can close** ride on their own RPC that takes a patch, rather
+than on the mode: the display is a property of the machine you sit at, and the lid switch
+says what the timer and On mean, not which of them runs. Both survive a mode change and a
+spent timer alike. The controller turns lid mode on and off to match only when a person
+changes the mode or the switch, never on a tick.
 
 ## Sleeping, and getting back
 
@@ -145,6 +162,11 @@ next to `charged` means "not applicable", and `(no estimate)` means pmset is sti
 working it out. Both read as no estimate rather than as no time left. A machine without
 a battery simply has no card.
 
+The watts come from `ioreg -rw0 -c AppleSmartBattery`, read alongside pmset: the charger's
+rating from `AdapterDetails`, the power in from `PowerTelemetryData.SystemPowerIn`, and the
+battery's flow from its `Voltage` times its `Amperage` (a signed number printed as an
+unsigned one). If ioreg fails, the battery still shows, without watts.
+
 The mode lives in `~/.jobby-jobs/caffeine.json` — a fixed path, because a plugin cannot
 find its own directory.
 
@@ -196,7 +218,8 @@ themselves through the same `formatRemaining` the countdown uses — 30 becomes 
 wraps the label, wraps the hint, and drops the toggle onto a line of its own — three
 ragged lines where the rest of the page has tidy tiles. The display toggle is a
 `ModeCard` instead, showing "on" the same way a chosen mode does: by the border, with
-`MonitorOff`/`Monitor` carrying the state as well. **Sleep now** is the same tile shape
+`MonitorOff`/`Monitor` carrying the state as well. The lid switch is a chip inside the
+timer's card, showing "on" the same way a chosen length does. **Sleep now** is the same tile shape
 without a state to show — it borrows the selected look only while the request is in
 flight, which on a phone is the last thing rendered before the connection dies. The app ships the whole lucide
 set, which is worth checking in

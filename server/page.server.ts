@@ -23,8 +23,9 @@ function escape(text: string): string {
 function batteryLine(battery: Battery | null): string {
   if (!battery) return "";
   const source = battery.external ? "on the charger" : "on battery";
-  if (battery.charging) return `${battery.percent}% · charging`;
-  return `${battery.percent}% · ${source}`;
+  const watts = battery.external && battery.inputWatts !== null ? ` · ${Math.round(battery.inputWatts)} W` : "";
+  if (battery.charging) return `${battery.percent}% · charging${watts}`;
+  return `${battery.percent}% · ${source}${watts}`;
 }
 
 /**

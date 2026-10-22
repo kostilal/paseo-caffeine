@@ -4,6 +4,9 @@ import type { Battery } from "../shared/caffeine.shared.ts";
 /** Reading `pmset -g batt` costs a few milliseconds, so a tick can afford it. */
 const PMSET = "/usr/bin/pmset";
 const ARGS = ["-g", "batt"] as const;
+/** The battery's own registry entry, where macOS keeps the watts pmset leaves out. */
+const IOREG = "/usr/sbin/ioreg";
+const IOREG_ARGS = ["-rw0", "-c", "AppleSmartBattery"] as const;
 
 /**
  * `pmset -g batt` prints the power source on one line and, on a machine that has a
@@ -37,7 +40,66 @@ export function parseBattery(text: string): Battery | null {
     if (total > 0) minutes = total;
   }
 
-  return { percent, charging, charged, external, minutes };
+  return { percent, charging, charged, external, minutes, adapterWatts: null, inputWatts: null, batteryWatts: null };
+}
+
+export type Power = Pick<Battery, "adapterWatts" | "inputWatts" | "batteryWatts">;
+
+const NO_POWER: Power = { adapterWatts: null, inputWatts: null, batteryWatts: null };
+
+/**
+ * A value from a `{"Key"=123,...}` dictionary that ioreg prints on one line. The whole
+ * line is searched rather than up to the first `}`: a USB-C charger's dictionary carries
+ * a nested `"UsbHvcMenu"=({...},{...})`, in whatever order ioreg likes.
+ */
+function nested(text: string, dictionary: string, key: string): number | null {
+  const line = text.match(new RegExp(`^\\s*"${dictionary}" = (.*)$`, "m"))?.[1];
+  const value = line?.match(new RegExp(`[{,]"${key}"=(\\d+)`))?.[1];
+  return value === undefined ? null : Number(value);
+}
+
+/** A top-level `"Key" = 123` line. */
+function plain(text: string, key: string): string | null {
+  return text.match(new RegExp(`^\\s*"${key}" = (\\d+)\\s*$`, "m"))?.[1] ?? null;
+}
+
+function oneDecimal(watts: number): number {
+  return Math.round(watts * 10) / 10;
+}
+
+/**
+ * The watts in `ioreg -rw0 -c AppleSmartBattery`, which is where the menu-bar wattage
+ * tools read them too:
+ *
+ *     "AdapterDetails" = {"Watts"=96,"Name"="96W USB-C Power Adapter",...}
+ *     "PowerTelemetryData" = {"SystemPowerIn"=61234,...}      milliwatts from the charger
+ *     "Voltage" = 12650                                         millivolts
+ *     "Amperage" = 18446744073709549360                         milliamps, as an unsigned
+ *                                                               64-bit number: negative = draining
+ *
+ * Off the charger the adapter's dictionary has no watts and the power in is zero, and both
+ * read as null rather than as a charger rated at nothing. A Mac without the telemetry
+ * dictionary (the older Intel ones) gets the adapter's rating and the battery flow only.
+ */
+export function parsePower(text: string): Power {
+  const external = /^\s*"ExternalConnected" = Yes\s*$/m.test(text);
+
+  const rated = nested(text, "AdapterDetails", "Watts");
+  const adapterWatts = external && rated !== null && rated > 0 ? rated : null;
+
+  const powerIn = nested(text, "PowerTelemetryData", "SystemPowerIn");
+  const watts = powerIn === null ? 0 : oneDecimal(powerIn / 1000);
+  const inputWatts = external && watts > 0 ? watts : null;
+
+  const volts = plain(text, "Voltage");
+  const amps = plain(text, "Amperage");
+  let batteryWatts: number | null = null;
+  if (volts !== null && amps !== null) {
+    const milliamps = Number(BigInt.asIntN(64, BigInt(amps)));
+    batteryWatts = oneDecimal((Number(volts) * milliamps) / 1_000_000);
+  }
+
+  return { adapterWatts, inputWatts, batteryWatts };
 }
 
 export interface BatteryProbe {
@@ -47,25 +109,31 @@ export interface BatteryProbe {
 
 type Runner = () => Promise<string>;
 
-function runPmset(): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(PMSET, [...ARGS], { timeout: 5_000 }, (error, stdout) => {
-      if (error) reject(error);
-      else resolve(stdout);
+function runner(file: string, args: readonly string[]): Runner {
+  return () =>
+    new Promise((resolve, reject) => {
+      execFile(file, [...args], { timeout: 5_000 }, (error, stdout) => {
+        if (error) reject(error);
+        else resolve(stdout);
+      });
     });
-  });
 }
 
-export function createBatteryProbe(run: Runner = runPmset): BatteryProbe {
+export function createBatteryProbe(
+  run: Runner = runner(PMSET, ARGS),
+  runIoreg: Runner = runner(IOREG, IOREG_ARGS),
+): BatteryProbe {
   return {
     async read() {
-      try {
-        return parseBattery(await run());
-      } catch {
-        // A battery that cannot be read is simply not shown; it has no say in whether
-        // the Mac stays awake, so there is nothing to resolve towards.
-        return null;
-      }
+      const [batt, ioreg] = await Promise.allSettled([run(), runIoreg()]);
+      // A battery that cannot be read is simply not shown; it has no say in whether
+      // the Mac stays awake, so there is nothing to resolve towards.
+      if (batt.status === "rejected") return null;
+      const battery = parseBattery(batt.value);
+      if (!battery) return null;
+      // The watts are an extra: without them the battery still shows as it always did.
+      const power = ioreg.status === "fulfilled" ? parsePower(ioreg.value) : NO_POWER;
+      return { ...battery, ...power };
     },
   };
 }

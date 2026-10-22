@@ -1,4 +1,4 @@
-import type { Battery, LidStatus, SetInput, SetOptionsInput, Status } from "../shared/caffeine.shared.ts";
+import type { Battery, LidStatus, SetInput, SetOptionsInput, Status, WarmupStatus } from "../shared/caffeine.shared.ts";
 import type { Keeper } from "./keeper.server.ts";
 import { TICK_MS, type Stored, decide, defaultStored, nextBusyUntil, untilForMinutes } from "./policy.ts";
 
@@ -13,8 +13,16 @@ export interface ControllerDeps {
   wakeUrl?(): string;
   /** Orders the Mac under; absent in tests that have no business suspending anything. */
   sleepNow?(): void;
-  /** Lid mode, checked on the same tick; absent in tests that do not touch it. */
-  lid?: { tick(battery: Battery | null): Promise<void>; status(): LidStatus };
+  /** Lid mode, checked on the same tick and turned on and off with the timer and On when
+   *  the lid switch is on; absent in tests that do not touch it. */
+  lid?: {
+    tick(battery: Battery | null): Promise<void>;
+    status(): LidStatus;
+    enable?(length: number | "forever", untilMs?: number): Promise<void>;
+    disable?(why: string): Promise<void>;
+  };
+  /** Session warm-up, checked on the same tick; absent in tests that do not touch it. */
+  warmup?: { tick(): Promise<void>; status(): WarmupStatus };
   now?: () => number;
   tickMs?: number;
   log?: (line: string) => void;
@@ -26,6 +34,9 @@ export interface Controller {
   status(): Status;
   set(input: SetInput): Promise<Status>;
   setOptions(patch: SetOptionsInput): Promise<Status>;
+  /** Brings lid mode in line with the mode and the switch, as a change would: after the
+   *  one-time permission arrives, for a timer or On already running. */
+  syncLid(): Promise<Status>;
   /** Snapshots first, then asks for sleep: the answer has to outrun the suspend. */
   sleep(): Status;
   tick(): Promise<Status>;
@@ -60,10 +71,52 @@ export function createController(deps: ControllerDeps): Controller {
       error: deps.keeper.error(),
       tickAt,
       keepDisplay: stored.keepDisplay,
+      lidClosed: stored.lidClosed,
       wakeUrl: deps.wakeUrl?.() ?? "",
       battery,
-      lid: deps.lid?.status() ?? { on: false, until: "", minutes: 0, setup: "unknown", error: "" },
+      lid: deps.lid?.status() ?? { on: false, until: "", minutes: 0, forever: false, ended: "", stopped: "", setup: "unknown", error: "" },
+      warmup: deps.warmup?.status() ?? { enabled: false, time: "06:00", nextAt: "", lastAt: "", results: [], running: false },
     };
+  }
+
+  /**
+   * Lid mode follows the mode when the lid switch is on: the timer's deadline under a timer,
+   * no end under On. Off and Auto turn it off, and so does the switch. Only on a change a
+   * person made, never on a tick: lid mode that ended on a low battery or heat stays off
+   * until somebody picks again. Lid mode Caffeine did not start (sleep switched off by hand)
+   * is not turned off by a mode change; a timer or On with the switch on takes it over.
+   */
+  async function syncLid(): Promise<void> {
+    const lid = deps.lid;
+    if (!lid?.enable || !lid.disable) return;
+    const current = lid.status();
+    const ours = current.forever || current.until !== "";
+    const want = stored.lidClosed && (stored.mode === "timer" || stored.mode === "on");
+    try {
+      if (!want) {
+        if (ours) await lid.disable(stored.lidClosed ? `mode ${stored.mode}` : "lid switch off");
+      } else if (stored.mode === "on") {
+        if (!current.forever) await lid.enable("forever");
+      } else if (current.until !== stored.until) {
+        const untilMs = Date.parse(stored.until);
+        // A timer already spent, which the next tick turns into Off: nothing to cover.
+        if (untilMs > now()) await lid.enable(Math.max(1, Math.round((untilMs - now()) / 60_000)), untilMs);
+      }
+    } catch (failure) {
+      log(`caffeine: lid change failed: ${String(failure)}`);
+    }
+  }
+
+  /**
+   * Changes run one at a time. Lid mode takes seconds to switch (sudo, pmset), and an Off
+   * pressed while an On is still switching it would otherwise read lid mode as not yet on,
+   * leave it, and let the On finish: sleep switched off with no end under Off.
+   */
+  let changes: Promise<unknown> = Promise.resolve();
+  function oneAtATime<T>(change: () => Promise<T>): Promise<T> {
+    const next = changes.then(change);
+    changes = next.catch(() => undefined);
+    return next;
   }
 
   async function reconcile(): Promise<Status> {
@@ -75,6 +128,9 @@ export function createController(deps: ControllerDeps): Controller {
     if (deps.readBattery) battery = await deps.readBattery();
     // Lid mode ends at its deadline or on a low battery whatever the mode says.
     if (deps.lid) await deps.lid.tick(battery).catch((failure) => log(`caffeine: lid check failed: ${String(failure)}`));
+    // Not awaited: a warm-up runs `claude` once per login, which takes seconds, and the tick
+    // that decides whether the Mac stays awake must not wait on it.
+    if (deps.warmup) void deps.warmup.tick().catch((failure) => log(`caffeine: warm-up failed: ${String(failure)}`));
     busyUntil = nextBusyUntil(busyUntil, running, nowMs);
 
     const decision = decide(stored, nowMs, busyUntil);
@@ -115,31 +171,45 @@ export function createController(deps: ControllerDeps): Controller {
 
     status: snapshot,
 
-    async set(input) {
-      // The display choice rides through a mode change untouched: it is a property of
-      // the machine the user is sitting at, not of why the Mac is being kept awake.
+    set: (input) => oneAtATime(async () => {
+      // The switches ride through a mode change untouched: the display is a property of
+      // the machine the user is sitting at, and the lid switch says what the timer and On
+      // mean, not which of them is running.
       const next: Stored =
         input.mode === "timer"
-          ? { mode: "timer", until: untilForMinutes(now(), input.minutes), keepDisplay: stored.keepDisplay }
-          : { mode: input.mode, until: "", keepDisplay: stored.keepDisplay };
+          ? { ...stored, mode: "timer", until: untilForMinutes(now(), input.minutes) }
+          : { ...stored, mode: input.mode, until: "" };
       // A different deadline or a different mode needs a child with different
       // arguments, so the old one goes first and reconcile() starts the right one.
       if (next.mode !== stored.mode || next.until !== stored.until) deps.keeper.release();
       stored = next;
       await deps.write(stored);
+      await syncLid();
       return reconcile();
-    },
+    }),
 
-    async setOptions(patch) {
-      const next: Stored = { ...stored, keepDisplay: patch.keepDisplay ?? stored.keepDisplay };
-      if (next.keepDisplay === stored.keepDisplay) return reconcile();
+    setOptions: (patch) => oneAtATime(async () => {
+      const next: Stored = {
+        ...stored,
+        keepDisplay: patch.keepDisplay ?? stored.keepDisplay,
+        lidClosed: patch.lidClosed ?? stored.lidClosed,
+      };
+      if (next.keepDisplay === stored.keepDisplay && next.lidClosed === stored.lidClosed) return reconcile();
       // caffeinate cannot be told to drop -d while it runs, so the child goes and
       // reconcile() starts one with the right arguments.
-      deps.keeper.release();
+      if (next.keepDisplay !== stored.keepDisplay) deps.keeper.release();
+      const lidChanged = next.lidClosed !== stored.lidClosed;
       stored = next;
       await deps.write(stored);
+      if (lidChanged) await syncLid();
       return reconcile();
-    },
+    }),
+
+    syncLid: () =>
+      oneAtATime(async () => {
+        await syncLid();
+        return reconcile();
+      }),
 
     /**
      * The hold goes first, and it has to. `caffeinate -s` outranks `pmset sleepnow`:

@@ -15,6 +15,7 @@ function remainingOf(lid: LidStatus, now: number): string | null {
 }
 
 function labelFor(lid: LidStatus, strings: Strings, now: number): string {
+  if (lid.forever) return strings.lidAlertLabelForever;
   const left = remainingOf(lid, now);
   return left === null ? strings.lidAlertLabelNoTimer : strings.lidAlertLabel(left);
 }
@@ -30,7 +31,7 @@ function AlertIcon({ size, theme }: PluginButtonIconProps) {
  */
 export function contributeLidAlert(client: PluginClientContext): () => void {
   const strings = t(detectAppLocale());
-  let lid: LidStatus = { on: false, until: "", minutes: 0, setup: "unknown", error: "" };
+  let lid: LidStatus = { on: false, until: "", minutes: 0, forever: false, ended: "", stopped: "", setup: "unknown", error: "" };
   const buttons = new Set<PluginButtonRegistration>();
 
   const apply = () => {

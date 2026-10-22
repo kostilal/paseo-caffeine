@@ -4,7 +4,16 @@ import type { Battery } from "../shared/caffeine.shared.ts";
 import { renderWakePage } from "./page.server.ts";
 
 const AT = new Date("2026-09-21T07:05:00.000Z");
-const charged: Battery = { percent: 99, charging: false, charged: true, external: true, minutes: null };
+const charged: Battery = {
+  percent: 99,
+  charging: false,
+  charged: true,
+  external: true,
+  minutes: null,
+  adapterWatts: null,
+  inputWatts: null,
+  batteryWatts: null,
+};
 
 function page(overrides: Partial<Parameters<typeof renderWakePage>[0]> = {}): string {
   return renderWakePage({ host: "MacBook Pro", at: AT, mode: "on", active: true, battery: charged, ...overrides });
@@ -21,6 +30,11 @@ test("the power source is spelled out, not left to a glyph", () => {
   assert.match(page(), /99% · on the charger/);
   assert.match(page({ battery: { ...charged, external: false, charged: false } }), /99% · on battery/);
   assert.match(page({ battery: { ...charged, charging: true } }), /99% · charging/);
+});
+
+test("on the charger the page says how many watts are coming in", () => {
+  assert.match(page({ battery: { ...charged, charging: true, inputWatts: 61.4 } }), /99% · charging · 61 W/);
+  assert.doesNotMatch(page({ battery: { ...charged, external: false, charged: false, inputWatts: 61.4 } }), / W</);
 });
 
 test("a machine without a battery simply has no battery line", () => {

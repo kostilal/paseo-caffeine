@@ -77,7 +77,7 @@ const none = z.object({});
 // The status keeps everything a person asks about and drops the plumbing: the wake link is
 // a LAN address with no meaning off the home network, and tickAt is the controller's clock.
 // Every action answers with the same status, so it is trimmed the same way.
-const STATUS_FIELDS = ["mode", "until", "active", "busy", "agents", "keepDisplay", "battery", "error"];
+const STATUS_FIELDS = ["mode", "until", "active", "busy", "agents", "keepDisplay", "lidClosed", "battery", "error"];
 
 export const OPERATIONS: CaffeineOperation[] = [
   {
@@ -87,7 +87,7 @@ export const OPERATIONS: CaffeineOperation[] = [
     default: true,
     title: "Keep-awake status",
     description:
-      "Whether the Mac is held awake now (active), the mode: off, on, timer (until the time in `until`) or auto (while agents work); busy = an agent worked in the last few minutes; how many agents run now; whether the display is held too; and the battery.",
+      "Whether the Mac is held awake now (active), the mode: off, on, timer (until the time in `until`) or auto (while agents work); busy = an agent worked in the last few minutes; how many agents run now; whether the display is held too; whether the timer and On also let the lid close (lidClosed); and the battery, with the watts on the charger (adapterWatts = what the charger is rated for, inputWatts = what the Mac draws from it now, batteryWatts = into the battery when positive, out of it when negative).",
     input: none,
     fields: STATUS_FIELDS,
   },
@@ -144,7 +144,18 @@ export const OPERATIONS: CaffeineOperation[] = [
     contract: setOptions,
     title: "Keep the display on too",
     description: "true holds the display awake along with the system; false lets the display sleep as usual.",
-    input: setOptionsInput.required(),
+    input: setOptionsInput.pick({ keepDisplay: true }).required(),
+    risk: "low",
+    fields: STATUS_FIELDS,
+  },
+  {
+    id: "lid_closed",
+    kind: "action",
+    contract: setOptions,
+    title: "Let the lid close under the timer and On",
+    description:
+      "true: while a timer or On runs, the Mac keeps running with the lid closed too, for as long as they last (it still stops on a battery below 20% or when the Mac runs hot); false: closing the lid sleeps the Mac as usual. Needs a one-time permission set up on the Mac.",
+    input: setOptionsInput.pick({ lidClosed: true }).required(),
     risk: "low",
     fields: STATUS_FIELDS,
   },
