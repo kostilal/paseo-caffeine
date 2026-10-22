@@ -44,7 +44,7 @@ function fake(options: { logins?: Login[]; fails?: string[]; stored?: WarmupStor
   const warmup = createWarmup({
     read: async () => value,
     write: async (next) => void (value = next),
-    logins: async () => options.logins ?? [{ dir: "/h/.claude", key: "a", label: "a@x" }, { dir: "/h/.claude-work", key: "b", label: "b@y" }],
+    logins: async () => options.logins ?? [{ dir: "/h/.claude", label: "a@x" }, { dir: "/h/.claude-work", label: "b@y" }],
     ping: async (dir) => {
       pings.push(dir);
       await new Promise((resolve) => setImmediate(resolve));
@@ -113,7 +113,7 @@ test("only a Claude subscription login is warmed up; an API, Bedrock or Vertex l
 });
 
 test("a skipped login is reported, not pinged", async () => {
-  const f = fake({ logins: [{ dir: "/h/.claude-api", key: "k", label: "api@x", skip: "skipped: not a Claude subscription login" }] });
+  const f = fake({ logins: [{ dir: "/h/.claude-api", label: "api@x", skip: "skipped: not a Claude subscription login" }] });
   await f.warmup.start();
   await f.warmup.runNow();
   assert.deepEqual(f.pings, []);

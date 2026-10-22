@@ -712,6 +712,23 @@ test("the display is left alone when lid mode is off", async () => {
   assert.ok(!off.calls.some((call) => call.endsWith("displaysleepnow")), "lid mode off: macOS sleeps the Mac anyway");
 });
 
+test("with lid mode off the lid is not even looked at", async () => {
+  const mac = fakeMac({ lidClosed: () => true });
+  let looks = 0;
+  const run = mac.deps.run;
+  mac.deps.run = async (command, args) => {
+    if (command === "/usr/sbin/ioreg") looks += 1;
+    return run(command, args);
+  };
+  const lid = createLid(mac.deps);
+  await lid.start();
+  await lid.checkClosed();
+  assert.equal(looks, 0, "no ioreg once a minute for nothing");
+  await lid.enable(30);
+  await lid.checkClosed();
+  assert.equal(looks, 1, "with lid mode on it is");
+});
+
 test("an external monitor keeps the screen on: displaysleepnow would blank it too", async () => {
   assert.equal(externalDisplay(JSON.stringify({ SPDisplaysDataType: [{ spdisplays_ndrvs: [{ spdisplays_connection_type: "spdisplays_internal" }] }] })), false);
   assert.equal(externalDisplay("not json"), true, "unreadable counts as external");

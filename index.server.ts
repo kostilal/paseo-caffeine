@@ -132,8 +132,8 @@ export default function contribute(server: PluginServerContext) {
   // For God Mode: the operations above, described for an assistant that cannot see them.
   server.handle(describeRpc, () => describeCaffeine());
 
-  // The lid is looked at once a minute: putting the display to sleep a little late is fine,
-  // and it is asked once per closing, never again while the lid stays shut.
+  // Under lid mode the lid is looked at once a minute: putting the display to sleep a little
+  // late is fine, and every look while the lid stays shut puts it to sleep again (checkClosed).
   const lidWatch = setInterval(() => void lid.checkClosed().catch(() => undefined), LID_CHECK_MS);
   lidWatch.unref?.();
 

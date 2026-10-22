@@ -162,7 +162,6 @@ export function warmupTargets(entries: ReadonlyArray<{ dir: string; status: Auth
     .filter(({ status }) => status.loggedIn === true)
     .map(({ dir, status }) => ({
       dir,
-      key: dir,
       label: `${status.email || "?"} (${dir.slice(dir.lastIndexOf("/") + 1)})`,
       skip: subscriptionLogin(status) ? "" : "skipped: not a Claude subscription login",
     }));
@@ -170,8 +169,6 @@ export function warmupTargets(entries: ReadonlyArray<{ dir: string; status: Auth
 
 export interface Login {
   dir: string;
-  /** What makes two directories the same login: they share one allowance. */
-  key: string;
   label: string;
   /** Why it is not warmed up (an API login), or "" to warm it up. */
   skip?: string;
