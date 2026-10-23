@@ -515,6 +515,7 @@ function LidCard({
   now,
   busy,
   tile,
+  timerShown,
   onToggle,
   onSetup,
   onResume,
@@ -525,6 +526,8 @@ function LidCard({
   now: number;
   busy: boolean;
   tile: `${number}%`;
+  /** Whether the page offers the timer, so the switch does not point at a row that is not there. */
+  timerShown: boolean;
   onToggle(lidClosed: boolean): void;
   onSetup(): void;
   onResume(): void;
@@ -547,7 +550,7 @@ function LidCard({
   else if (lid.on && !ours) detail = strings.lidOnNoTimer;
   else if (lid.on) detail = lid.forever ? strings.lidOnForever : strings.lidOn(formatRemaining(remainingMs, strings));
   else if (paused) detail = `${pausedReason(lid, strings)} · ${strings.lidPaused}`;
-  else detail = status.lidClosed ? strings.lidIdle : strings.lidOff;
+  else detail = status.lidClosed ? (timerShown ? strings.lidIdle : strings.lidIdleOn) : strings.lidOff;
   const failed =
     lid.error === "cooling" ? (cooling ? "" : strings.lidCoolingError) : lid.error !== "" && lid.error !== "needs-setup" ? strings.lidFailed(lid.error) : "";
   // When paused the reason is already the detail; a second line would say it twice.
@@ -679,9 +682,11 @@ export function CaffeineSurface({ theme, layout }: PluginSurfaceProps) {
   const askDismiss = useRpc(dismissThermal);
   const [fanOpen, setFanOpen] = useState(false);
   const queryClient = useQueryClient();
-  // Session warm-up switched off in Settings is no tile at all. Hidden until the answer is in,
-  // so a tile switched off does not flash up first; a host that cannot answer keeps the default.
+  // The timer and Session warm-up are on the page only when Settings says so. Hidden until the
+  // answer is in, so a row switched off does not flash up first; a host that cannot answer (no
+  // plugin settings there) shows both, since nothing there could ever bring them back.
   const prefs = useSettings(preferences);
+  const showTimer = prefs.status === "ready" ? prefs.values.timer : prefs.status !== "loading";
   const showWarmup = prefs.status === "ready" ? prefs.values.warmup : prefs.status !== "loading";
 
   const { data, isLoading, isError, dataUpdatedAt, errorUpdatedAt } = useQuery({
@@ -863,6 +868,7 @@ export function CaffeineSurface({ theme, layout }: PluginSurfaceProps) {
               what makes a tile's share mean a width: ModeCard's flexBasis resolves against its
               parent's main axis, and the content container's runs down the page, so a card left
               as a direct child there is stretched to the full scroll height. */}
+          {showTimer ? (
           <View style={{ flexDirection: "row" }}>
             <ModeCard icon="Timer" title={strings.timer} detail={strings.timerDetail} selected={data.mode === "timer"} theme={theme} tile="100%">
               <View style={{ flexDirection: "row", gap: compact ? 6 : 8, marginTop: 4, flexWrap: "wrap" }}>
@@ -879,6 +885,7 @@ export function CaffeineSurface({ theme, layout }: PluginSurfaceProps) {
               </View>
             </ModeCard>
           </View>
+          ) : null}
 
           {/* The display, the lid and Session warm-up share a row: switches that ride along with
               the modes, shown "on" the same way as a mode — by the border. On the phone warm-up
@@ -900,6 +907,7 @@ export function CaffeineSurface({ theme, layout }: PluginSurfaceProps) {
               now={now}
               busy={changeOptions.isPending || change.isPending || lidSetupRun.isPending || lidResume.isPending}
               tile={m.switches}
+              timerShown={showTimer}
               onToggle={(lidClosed) => changeOptions.mutate({ lidClosed })}
               onSetup={() => lidSetupRun.mutate()}
               onResume={() => lidResume.mutate()}

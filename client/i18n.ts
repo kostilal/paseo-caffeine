@@ -62,6 +62,9 @@ export interface Strings {
   /** The Settings screen of its own: its title, and what switching warm-up off there does. */
   settingsTitle: string;
   settingsWarmupHint: string;
+  settingsTimerHint: string;
+  /** The lid switch on, with the timer row hidden: only On is left to use it. */
+  lidIdleOn: string;
   /** The heat block on the page (client/heat.tsx). */
   heatTitle: string;
   /** Thermal pressure, 0 nominal … 4 sleeping. */
@@ -216,6 +219,8 @@ const en: Strings = {
   warmupNone: "no logged-in accounts",
   settingsTitle: "Settings",
   settingsWarmupHint: "Off: no tile on the page, and no warm-up runs.",
+  settingsTimerHint: "Off: no timer row on the page; a timer already running still ends on time.",
+  lidIdleOn: "works under On",
   heatTitle: "Heat",
   pressureLevel: (level) => ["Nominal", "Moderate", "Heavy", "Trapping", "Sleeping"][level] ?? String(level),
   pressureUnknown: "pressure unknown",
@@ -354,6 +359,8 @@ const ru: Strings = {
   warmupNone: "нет аккаунтов со входом",
   settingsTitle: "Настройки",
   settingsWarmupHint: "Выключено: карточки нет, прогрев не запускается.",
+  settingsTimerHint: "Выключено: строки таймера на странице нет; запущенный таймер доработает.",
+  lidIdleOn: "работает в режиме Вкл",
   heatTitle: "Нагрев",
   pressureLevel: (level) => ["Норма", "Умеренное", "Сильное", "Критическое", "Сон"][level] ?? String(level),
   pressureUnknown: "давление неизвестно",
@@ -492,6 +499,8 @@ const uk: Strings = {
   warmupNone: "немає акаунтів із входом",
   settingsTitle: "Налаштування",
   settingsWarmupHint: "Вимкнено: картки немає, прогрів не запускається.",
+  settingsTimerHint: "Вимкнено: рядка таймера на сторінці немає; запущений таймер допрацює.",
+  lidIdleOn: "працює в режимі Увімк",
   heatTitle: "Нагрів",
   pressureLevel: (level) => ["Норма", "Помірне", "Сильне", "Критичне", "Сон"][level] ?? String(level),
   pressureUnknown: "тиск невідомий",

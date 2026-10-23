@@ -10,8 +10,8 @@ const delaysFor = (level: Preferences["thermalPressure"]) => (level === "moderat
 const defaultDelay = (level: Preferences["thermalPressure"]) => (level === "moderate" ? 300 : 60);
 
 /**
- * Settings → Plugins → Caffeine → Settings: whether the page offers Session warm-up at all,
- * and the heat guard's sensitivity. The fixed parts of the guard are listed, not offered: the
+ * Settings → Plugins → Caffeine → Settings: whether the page offers the timer and Session
+ * warm-up at all (both hidden until asked for), and the heat guard's sensitivity. The fixed parts of the guard are listed, not offered: the
  * battery limit, trapping at once, and no readings with the lid closed. The fan threshold
  * lives in the popup on the page, by the fan reading it is about.
  */
@@ -32,6 +32,13 @@ export function CaffeineSettings() {
     <View style={{ gap: 12 }}>
       <SettingsSection title={strings.title}>
         <SettingsCard>
+          <SettingsSwitch
+            label={strings.timer}
+            hint={strings.settingsTimerHint}
+            value={values.timer}
+            disabled={busy}
+            onValueChange={(timer) => save({ timer })}
+          />
           <SettingsSwitch
             label={strings.warmupLabel}
             hint={strings.settingsWarmupHint}

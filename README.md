@@ -17,8 +17,9 @@ Off, On, **Sleep now**, which sends the Mac under from wherever you are, and Whi
 work share the top row, with the timer's six lengths under them. **Keep display on**,
 **Lid can close** and Session warm-up share the last row, each switched by a press on its
 tile (− and + move the warm-up's hour). Below the modes is the link that wakes the Mac
-again. Session warm-up can be taken off the page in Settings → Plugins → Caffeine →
-Settings, which switches it off too, so it never runs unseen.
+again. The timer and Session warm-up are hidden until switched on in Settings → Plugins →
+Caffeine → Settings; hiding warm-up switches it off too, so it never runs unseen, while a
+timer already running still ends on time.
 
 Only system sleep is held and the display sleeps as usual — unless **Keep display on** is
 switched on, which holds both whenever the Mac is held. A closed lid still sleeps a MacBook,

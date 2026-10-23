@@ -3,8 +3,10 @@ import { z } from "zod";
 
 /**
  * Caffeine's preferences, kept by the host: Settings → Plugins → Caffeine → Settings.
- * `warmup` off takes Session warm-up's tile off the page and switches warm-up itself off, so
- * nothing unseen messages the accounts every morning.
+ * `timer` and `warmup` put their rows on the page; both are hidden until asked for. `warmup`
+ * off also switches warm-up itself off (the server sees to it), so nothing unseen messages the
+ * accounts every morning. A running timer is not touched by hiding its row: it shows in the
+ * state card and ends on time.
  *
  * The rest is the heat guard of lid mode (server/thermal.ts says what each one means). The
  * schema only checks shapes: which delays go with which pressure level, and how low the fan
@@ -15,9 +17,10 @@ import { z } from "zod";
 export const preferences = defineSettings({
   id: "preferences",
   scope: "host",
-  version: 2,
+  version: 3,
   schema: z.object({
-    warmup: z.boolean().default(true),
+    timer: z.boolean().default(false),
+    warmup: z.boolean().default(false),
     /** The pressure level that puts a closed Mac in lid mode to sleep, after `thermalDelayS`. */
     thermalPressure: z.enum(["heavy", "moderate"]).default("heavy"),
     thermalDelayS: z.number().int().default(60),
@@ -27,8 +30,10 @@ export const preferences = defineSettings({
     fanPct: z.number().int().default(85),
     fanDelayS: z.number().int().default(60),
   }),
-  // Version 1 had the warm-up switch only; the new keys come in at their defaults.
-  migrate: (values) => values,
+  // The host keeps the whole document, defaults included, so a new default reaches nobody who
+  // has one: version 3 hides the timer and warm-up for everyone once, and they can be shown
+  // again. Version 1's other keys came in at their defaults.
+  migrate: (values, fromVersion) => (fromVersion < 3 ? { ...(values as object), timer: false, warmup: false } : values),
 });
 
 /**
@@ -52,7 +57,8 @@ export const THERMAL_LIMITS = {
 export type Preferences = z.output<typeof preferences.schema>;
 
 export const defaultPreferences: Preferences = {
-  warmup: true,
+  timer: false,
+  warmup: false,
   thermalPressure: "heavy",
   thermalDelayS: 60,
   thermalCooldownMin: 5,

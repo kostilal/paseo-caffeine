@@ -124,7 +124,19 @@ export default function contribute(server: PluginServerContext) {
   try {
     const handle = server.registerSettings(preferences) as unknown as Partial<HostSettings> | undefined;
     const apply = (state: HostSettingsState) => {
-      if (state.status === "ready" && state.values) heat.setStored(state.values);
+      if (state.status !== "ready" || !state.values) return;
+      heat.setStored(state.values);
+      // Warm-up hidden is warm-up off, whether hidden by hand or by default: nothing unseen
+      // messages the accounts. Only once warm-up has read its own state, so its hour survives.
+      if (state.values.warmup === false) {
+        void startedServer()
+          .then(async () => {
+            if (!warmup.status().enabled) return;
+            await warmup.set({ enabled: false });
+            console.log("caffeine: warm-up switched off: its tile is hidden");
+          })
+          .catch((error) => console.error(`caffeine: warm-up not switched off: ${String(error)}`));
+      }
     };
     if (typeof handle?.subscribe === "function") stopPreferences = handle.subscribe(apply);
     if (typeof handle?.read === "function") void handle.read().then(apply).catch((error) => console.error(`caffeine: preferences unreadable: ${String(error)}`));
