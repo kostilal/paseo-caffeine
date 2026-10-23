@@ -33,6 +33,9 @@ const settled = () => new Promise((resolve) => setImmediate(resolve));
 function fakeMac(
   options: {
     ready?: boolean;
+    /** Another app's NOPASSWD rule: `sudo -l` then answers without a password, and says yes to
+     *  anything an admin may run, pmset included. */
+    otherNopasswd?: boolean;
     disabled?: boolean;
     stored?: LidStored;
     failOff?: number;
@@ -59,7 +62,7 @@ function fakeMac(
   const deps: LidDeps = {
     run: async (command, args) => {
       const line = [command, ...args].join(" ");
-      if (line === "/usr/bin/sudo -n -l /usr/bin/pmset -a disablesleep 1") return { code: ready ? 0 : 1, stdout: "" };
+      if (line === "/usr/bin/sudo -n -l /usr/bin/pmset -a disablesleep 1") return { code: ready || options.otherNopasswd ? 0 : 1, stdout: "" };
       if (line === "/usr/sbin/system_profiler SPDisplaysDataType -json") {
         const internal = { spdisplays_connection_type: "spdisplays_internal" };
         const ndrvs = options.external ? [internal, { spdisplays_connection_type: "spdisplays_displayport" }] : [internal];
@@ -87,6 +90,7 @@ function fakeMac(
       return { code: 0, stdout: "" };
     },
     admin: options.admin ?? (async () => void (calls.push("admin"), (ready = true))),
+    ruleInstalled: async () => ready,
     // The real ones boot the old guard out before they load the new one, so a failure leaves none.
     startGuard: async (untilMs) => {
       calls.push(`guard ${new Date(untilMs).toISOString()}`);
@@ -217,6 +221,19 @@ test("setup goes through the admin dialog, after which it can be turned on", asy
   await lid.setup();
   assert.equal(lid.status().setup, "ready");
   await lid.enable(60);
+  assert.equal(lid.status().on, true);
+});
+
+test("another app's password-free sudo rule does not pass for the permission", async () => {
+  // `sudo -l` says yes to pmset here, yet pmset itself would still want a password.
+  const mac = fakeMac({ ready: false, otherNopasswd: true });
+  const lid = createLid(mac.deps);
+  await lid.start();
+  await lid.enable(30);
+  assert.deepEqual(mac.calls, [], "neither the guard nor the switch");
+  assert.equal(lid.status().setup, "needs-setup");
+  await lid.setup();
+  await lid.enable(30);
   assert.equal(lid.status().on, true);
 });
 

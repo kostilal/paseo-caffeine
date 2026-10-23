@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
@@ -221,6 +221,8 @@ export interface LidDeps {
   run(command: string, args: readonly string[]): Promise<{ code: number; stdout: string }>;
   /** Runs a shell script as root through macOS's own password (or Touch ID) dialog. */
   admin(script: string): Promise<void>;
+  /** Whether setup's sudoers rule is in place: its file exists, which needs no root to see. */
+  ruleInstalled(): Promise<boolean>;
   /** Arms the guard to restore sleep at `untilMs`, replacing any earlier one; false if it
    *  could not be armed. */
   startGuard(untilMs: number): Promise<boolean>;
@@ -280,6 +282,13 @@ export function createLid(deps: LidDeps): Lid {
   };
 
   async function readPermission(): Promise<void> {
+    // The rule's own file first: `sudo -l` says whether pmset is allowed at all, not whether it
+    // is allowed without a password, and it answers without one once the user has any NOPASSWD
+    // rule. An admin with another app's such rule looked ready and then failed on the switch.
+    if (!(await deps.ruleInstalled().catch(() => false))) {
+      setup = "needs-setup";
+      return;
+    }
     const allowed = await deps.run(SUDO, ["-n", "-l", PMSET, ...ON]).catch(() => ({ code: 1, stdout: "" }));
     setup = allowed.code === 0 ? "ready" : "needs-setup";
   }
@@ -575,6 +584,7 @@ export function systemLidDeps(log: (line: string) => void): LidDeps {
         await rm(dir, { recursive: true, force: true });
       }
     },
+    ruleInstalled: () => access(SUDOERS_FILE).then(() => true, () => false),
     startGuard: (untilMs) => arm(guardPlist(untilMs)),
     startHeartbeatGuard: () => arm(heartbeatGuardPlist(HEARTBEAT_FILE, HEARTBEAT_STALE_MS)),
     beat: async () => {
