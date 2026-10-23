@@ -1,6 +1,6 @@
 import { hostname } from "node:os";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { getStatus, runWarmup, setLid, setMode, setOptions, setWarmup, setupLid, sleepNow } from "./shared/caffeine.shared.ts";
+import { getStatus, preferences, runWarmup, setLid, setMode, setOptions, setWarmup, setupLid, sleepNow } from "./shared/caffeine.shared.ts";
 import { createWarmup, systemWarmupDeps } from "./server/warmup.server.ts";
 import { createLid, systemLidDeps } from "./server/lid.server.ts";
 import { createAgentsProbe } from "./server/agents.server.ts";
@@ -72,6 +72,11 @@ export default function contribute(server: PluginServerContext) {
   // "on" overnight stays on through a daemon restart without anybody opening the app.
   void startedServer().catch((error) => console.error(`caffeine: start failed: ${String(error)}`));
 
+  // The preferences its Settings screen edits (client/settings.tsx). That screen switches
+  // warm-up off itself when it takes the tile off the page: the SDK this builds against gives
+  // the server no way to read them.
+  server.registerSettings(preferences);
+
   server.handle(getStatus, async (_input, { paseo }) => {
     probe.remember(paseo);
     const instance = await startedServer();
@@ -110,6 +115,9 @@ export default function contribute(server: PluginServerContext) {
     probe.remember(paseo);
     const instance = await startedServer();
     await lid.setup();
+    // The permission is asked for by a press on the lid switch, so once it is given the switch
+    // comes on. Here rather than in the client, which may have stopped waiting for the dialog.
+    if (lid.status().setup === "ready" && !instance.status().lidClosed) return instance.setOptions({ lidClosed: true });
     // A timer or On already running with the switch on gets its lid mode now, not at the
     // next pick.
     return instance.syncLid();

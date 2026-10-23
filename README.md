@@ -13,21 +13,24 @@ gives Paseo the same lever with three positions:
 | **30 min … 12 h** | The Mac does not sleep until the deadline, then the switch goes back to Off by itself. Six lengths: 30 min, 1 h, 2 h, 3 h, 8 h, 12 h. With the lid switch on, the lid can close until the same deadline. |
 | **While agents work** | The Mac does not sleep while at least one Paseo agent on this host is running, and for three minutes after the last one went quiet. |
 
-Off, On and **Sleep now**, which sends the Mac under from wherever you are, share the top
-row; **Keep display on** sits next to While agents work. Below the modes is the link that
-wakes the Mac again.
+Off, On, **Sleep now**, which sends the Mac under from wherever you are, and While agents
+work share the top row, with the timer's six lengths under them. **Keep display on**,
+**Lid can close** and Session warm-up share the last row, each switched by a press on its
+tile (− and + move the warm-up's hour). Below the modes is the link that wakes the Mac
+again. Session warm-up can be taken off the page in Settings → Plugins → Caffeine →
+Settings, which switches it off too, so it never runs unseen.
 
 Only system sleep is held and the display sleeps as usual — unless **Keep display on** is
 switched on, which holds both whenever the Mac is held. A closed lid still sleeps a MacBook,
 `caffeinate` or not.
 
-**Lid can close**, the switch on the timer, is the one exception to that. With it on, the
+**Lid can close**, the switch next to Keep display on, is the one exception to that. With it on, the
 timer lets the Mac run with the lid shut until its deadline, and On lets it run with no end;
 Off and While agents work turn lid mode off, and the switch stays as it was for next time.
-It flips the system's own `pmset disablesleep`, which needs root, so the first press offers
-**Allow on this Mac**: macOS asks for the password (or Touch
-ID) once, and a sudoers rule allowing exactly `pmset -a disablesleep 1` and `… 0`, checked
-with `visudo` first, goes into `/etc/sudoers.d/paseo-caffeine`. After that the switch works
+It flips the system's own `pmset disablesleep`, which needs root, so the first press asks for
+that: macOS asks for the password (or Touch ID) once, a sudoers rule allowing exactly
+`pmset -a disablesleep 1` and `… 0`, checked with `visudo` first, goes into
+`/etc/sudoers.d/paseo-caffeine`, and the switch comes on. After that the switch works
 from the phone too. Sleep comes back by itself at the deadline, on battery below 20%, and
 before **Sleep now**. A guard does the same even if Paseo is not running by then: a
 LaunchAgent (`~/Library/LaunchAgents/com.paseo.caffeine.lid-guard.plist`) that waits for the
@@ -57,9 +60,12 @@ apply). By hand: `sudo pmset -a disablesleep 0`. To undo the permission:
 `sudo rm /etc/sudoers.d/paseo-caffeine`.
 
 The surface also shows the Mac's own battery: charge, whether the charger is in, and how
-long the charge has left — or how long until it is full. On the charger it also shows the
-watts, the way Wattage Connected does: what the Mac is drawing now next to the charge, and
-what the charger is rated for and how much goes into the battery underneath.
+long the charge has left — or how long until it is full. Under it, the watts, the way
+Wattage Connected shows them: on the charger, a bar as long as the charger's rating, split
+into what goes into the battery, what the Mac itself takes (the draw less the battery's
+share) and what the charger has left, with the two figures in a column underneath; off the
+charger, what the Mac takes from the battery. How old the reading is shows only once it is
+older than a minute and a half.
 
 ## Installing it
 

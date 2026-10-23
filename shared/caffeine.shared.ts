@@ -1,5 +1,23 @@
-import { defineRpc } from "@getpaseo/plugin";
+import { defineRpc, defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
+
+/**
+ * Caffeine's preferences, kept by the host: Settings → Plugins → Caffeine → Settings.
+ * `warmup` off takes Session warm-up's tile off the page and switches warm-up itself off, so
+ * nothing unseen messages the accounts every morning.
+ */
+export const preferences = defineSettings({
+  id: "preferences",
+  scope: "host",
+  version: 1,
+  schema: z.object({
+    warmup: z.boolean().default(true),
+  }),
+});
+
+export type Preferences = z.output<typeof preferences.schema>;
+
+export const defaultPreferences: Preferences = { warmup: true };
 
 export const mode = z.enum(["off", "on", "timer", "auto"]);
 /** Minutes rather than hours: the shortest hold is half of one. */

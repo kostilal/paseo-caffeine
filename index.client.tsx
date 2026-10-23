@@ -2,6 +2,7 @@ import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { getStatus, setMode, setOptions, sleepNow } from "./shared/caffeine.shared.ts";
 import { detectAppLocale, t } from "./client/i18n.ts";
 import { CaffeineSurface } from "./client/main.client.tsx";
+import { CaffeineSettings } from "./client/settings.tsx";
 import { contributeLidAlert } from "./client/lid-alert.tsx";
 
 export default function contribute(client: PluginClientContext) {
@@ -14,6 +15,8 @@ export default function contribute(client: PluginClientContext) {
   // setting as a surface, and Paseo's own settings are where a person goes looking for
   // "does this machine sleep".
   client.addSettingsScreen({ id: "settings", title: strings.title, icon: "Coffee", Component: CaffeineSurface });
+  // Next to it, the preferences of the page itself: which tiles it offers at all.
+  client.addSettingsScreen({ id: "preferences", title: strings.settingsTitle, icon: "Settings", Component: CaffeineSettings });
 
   // Kept rather than dropped: `contribute()` has to hand back a cleanup — the app
   // refuses the whole contribution otherwise, sidebar entry and surface included, and

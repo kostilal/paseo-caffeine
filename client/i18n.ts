@@ -27,7 +27,7 @@ export interface Strings {
   minutes(n: number): string;
   displayLabel: string;
   displayState(on: boolean): string;
-  /** The timer's lid switch: the timer and On also let the lid close. */
+  /** The lid switch: the timer and On also let the lid close. */
   lidLabel: string;
   lidOff: string;
   /** The switch is on, and neither the timer nor On is running. */
@@ -47,18 +47,21 @@ export interface Strings {
   lidPaused: string;
   lidResume: string;
   lidSetup: string;
-  lidSetupButton: string;
   lidFailed(message: string): string;
-  /** Session warm-up. `time` is "HH:MM"; `fresh` is when the window would reset. */
+  /** Session warm-up. `fresh` is when the window would reset, "HH:MM"; `at` when it last ran. */
   warmupLabel: string;
-  warmupOn(time: string, fresh: string): string;
+  warmupOn(fresh: string): string;
   warmupOff: string;
-  warmupEnable: string;
-  warmupDisable: string;
   warmupNow: string;
   warmupRunning: string;
+  /** Some logins failed, or there were none: `results` says which. */
   warmupLast(at: string, results: string): string;
+  /** Every login warmed up. */
+  warmupLastOk(at: string): string;
   warmupNone: string;
+  /** The Settings screen of its own: its title, and what switching warm-up off there does. */
+  settingsTitle: string;
+  settingsWarmupHint: string;
   /** The header alert while lid mode is on. */
   lidAlertTitle: string;
   lidAlertLabel(remaining: string): string;
@@ -76,12 +79,18 @@ export interface Strings {
   batteryUntilFull(eta: string): string;
   batteryUntilEmpty(eta: string): string;
   batteryNoEstimate: string;
+  /** The power section's heading: where the power comes from. */
   powerAC: string;
   powerBattery: string;
-  /** What the charger is rated for, and what of it goes into the battery. */
+  /** What the charger is rated for, when the Mac does not say what it draws. */
   wattsAdapter(watts: string): string;
-  wattsIntoBattery(watts: string): string;
-  updated(secondsAgo: number): string;
+  /** The column under the bar: what goes into the battery, and what the Mac itself takes. */
+  powerIntoBattery: string;
+  powerMac: string;
+  /** Off the charger: what the Mac takes from the battery. */
+  powerMacDraws(watts: string): string;
+  /** Said only once the reading has gone stale; `ago` is a length, "2 min". */
+  updated(ago: string): string;
   errorPrefix: string;
   /** The Command Center rows. Each one carries the plugin's name, because ⌘K is a flat
    *  list of everything and "Off" on its own belongs to nothing. */
@@ -114,38 +123,38 @@ const en: Strings = {
   timer: "Timer",
   timerDetail: "then back to Off by itself",
   auto: "While agents work",
-  autoDetail: "releases three minutes after the last agent goes quiet",
+  autoDetail: "plus 3 min after",
   hours: (n) => `${n} h`,
   minutes: (n) => `${n} min`,
   displayLabel: "Keep display on",
   displayState: (on) => (on ? "the screen stays lit" : "the screen sleeps"),
   lidLabel: "Lid can close",
-  lidOff: "A closed lid sleeps the Mac. Switch on to keep it running with the lid shut for the timer, or under On.",
-  lidIdle: "Pick a timer or On: the lid can close for as long as it lasts.",
-  lidOn: (remaining) => `You can close the lid · ${remaining} left. Sleep comes back by itself.`,
-  lidOnNoTimer: "Sleep is switched off on this Mac outside Caffeine.",
-  lidOnForever: "You can close the lid, with no end. Another mode, the switch or the header turns it off; so do a low battery and heat.",
+  lidOff: "a closed lid sleeps the Mac",
+  lidIdle: "works with the timer or On",
+  lidOn: (remaining) => `${remaining} left`,
+  lidOnNoTimer: "sleep is off outside Caffeine",
+  lidOnForever: "until you turn it off",
   lidAlertLabelForever: "Lid · always",
-  lidEndedBattery: "Turned off by itself: the battery was low.",
-  lidEndedHeat: "Turned off by itself: the Mac was running hot.",
-  lidStoppedSleep: "Turned off by Sleep now.",
-  lidStoppedOff: "Turned off from the header.",
-  lidStoppedManual: "Sleep was switched back on outside Caffeine.",
-  lidStoppedUnknown: "Lid mode is off.",
-  lidPaused: "A closed lid sleeps the Mac now.",
+  lidEndedBattery: "turned off: low battery",
+  lidEndedHeat: "turned off: running hot",
+  lidStoppedSleep: "Sleep now turned it off",
+  lidStoppedOff: "turned off from the header",
+  lidStoppedManual: "sleep switched back on by hand",
+  lidStoppedUnknown: "turned off",
+  lidPaused: "a closed lid sleeps the Mac",
   lidResume: "Turn back on",
-  lidSetup: "Needs a one-time permission on the Mac: it allows only this one power setting.",
-  lidSetupButton: "Allow on this Mac",
+  lidSetup: "press, the Mac asks for the password",
   lidFailed: (message) => `Did not work: ${message}`,
   warmupLabel: "Session warm-up",
-  warmupOn: (time, fresh) => `Every day at ${time} one short Haiku message per Claude account starts its 5-hour window, so it resets at ${fresh}. Only while the Mac is awake.`,
-  warmupOff: "Off. Start each account's 5-hour window early, so it resets partway into your day.",
-  warmupEnable: "Turn on",
-  warmupDisable: "Turn off",
+  warmupOn: (fresh) => `window resets at ${fresh}`,
+  warmupOff: "starts the 5-hour window early",
   warmupNow: "Warm up now",
   warmupRunning: "Warming up…",
-  warmupLast: (at, results) => `Last: ${at} · ${results}`,
+  warmupLast: (at, results) => `last ${at} · ${results}`,
+  warmupLastOk: (at) => `last ${at} ✓`,
   warmupNone: "no logged-in accounts",
+  settingsTitle: "Settings",
+  settingsWarmupHint: "Off: no tile on the page, and no warm-up runs.",
   lidAlertTitle: "Lid mode is on: this Mac will not sleep. Press to turn it off",
   lidAlertLabel: (remaining) => `Lid · ${remaining}`,
   lidAlertLabelNoTimer: "Lid · no sleep",
@@ -161,11 +170,13 @@ const en: Strings = {
   batteryUntilFull: (eta) => `full in ${eta}`,
   batteryUntilEmpty: (eta) => `${eta} left`,
   batteryNoEstimate: "working out the estimate",
-  powerAC: "on the charger",
-  powerBattery: "on battery",
+  powerAC: "On the charger",
+  powerBattery: "On battery",
   wattsAdapter: (watts) => `charger ${watts}`,
-  wattsIntoBattery: (watts) => `into the battery ${watts}`,
-  updated: (s) => (s < 5 ? "updated just now" : `updated ${s} s ago`),
+  powerIntoBattery: "Into the battery",
+  powerMac: "The Mac itself",
+  powerMacDraws: (watts) => `the Mac draws ${watts}`,
+  updated: (ago) => `updated ${ago} ago`,
   errorPrefix: "caffeinate failed",
   commandOff: "Caffeine: off",
   commandOn: "Caffeine: on",
@@ -196,38 +207,38 @@ const ru: Strings = {
   timer: "Таймер",
   timerDetail: "потом сам вернётся в Выкл",
   auto: "Пока работают агенты",
-  autoDetail: "отпускает через три минуты после последнего агента",
+  autoDetail: "и ещё 3 мин после",
   hours: (n) => `${n} ч`,
   minutes: (n) => `${n} мин`,
   displayLabel: "Не гасить экран",
   displayState: (on) => (on ? "экран не гаснет" : "экран гаснет как обычно"),
   lidLabel: "Можно закрыть крышку",
-  lidOff: "С закрытой крышкой Mac засыпает. Включи, чтобы он работал с закрытой крышкой на время таймера или в режиме Вкл.",
-  lidIdle: "Выбери таймер или Вкл: крышку можно закрыть, пока он идёт.",
-  lidOn: (remaining) => `Можно закрывать крышку · осталось ${remaining}. Сон вернётся сам.`,
-  lidOnNoTimer: "Сон на этом Mac выключен не через Caffeine.",
-  lidOnForever: "Можно закрывать крышку, без ограничения по времени. Выключит другой режим, переключатель или кнопка в шапке; а также низкий заряд и перегрев.",
+  lidOff: "крышка усыпляет Mac",
+  lidIdle: "работает с таймером или Вкл",
+  lidOn: (remaining) => `осталось ${remaining}`,
+  lidOnNoTimer: "сон выключен не Caffeine",
+  lidOnForever: "пока не выключишь",
   lidAlertLabelForever: "Крышка · всегда",
-  lidEndedBattery: "Выключился сам: был низкий заряд.",
-  lidEndedHeat: "Выключился сам: Mac перегревался.",
-  lidStoppedSleep: "Выключено кнопкой «Усыпить».",
-  lidStoppedOff: "Выключено кнопкой в шапке.",
-  lidStoppedManual: "Сон включили обратно не через Caffeine.",
-  lidStoppedUnknown: "Режим крышки выключен.",
-  lidPaused: "Сейчас закрытая крышка усыпит Mac.",
+  lidEndedBattery: "выключился: низкий заряд",
+  lidEndedHeat: "выключился: перегрев",
+  lidStoppedSleep: "«Усыпить» выключил",
+  lidStoppedOff: "выключили в шапке",
+  lidStoppedManual: "сон включили вручную",
+  lidStoppedUnknown: "выключен",
+  lidPaused: "крышка усыпит Mac",
   lidResume: "Включить снова",
-  lidSetup: "Нужно один раз разрешить на Mac: это разрешает только эту одну настройку питания.",
-  lidSetupButton: "Разрешить на этом Mac",
+  lidSetup: "нажми, Mac спросит пароль",
   lidFailed: (message) => `Не вышло: ${message}`,
   warmupLabel: "Прогрев сессии",
-  warmupOn: (time, fresh) => `Каждый день в ${time} одно короткое сообщение Haiku на каждый аккаунт Claude запускает его 5-часовое окно, и оно сбросится в ${fresh}. Только пока Mac не спит.`,
-  warmupOff: "Выключен. Запускает 5-часовое окно каждого аккаунта заранее, чтобы оно сбросилось посреди рабочего дня.",
-  warmupEnable: "Включить",
-  warmupDisable: "Выключить",
+  warmupOn: (fresh) => `сброс окна в ${fresh}`,
+  warmupOff: "заранее запускает 5-часовое окно",
   warmupNow: "Прогреть сейчас",
   warmupRunning: "Прогреваю…",
-  warmupLast: (at, results) => `Последний: ${at} · ${results}`,
+  warmupLast: (at, results) => `последний ${at} · ${results}`,
+  warmupLastOk: (at) => `последний ${at} ✓`,
   warmupNone: "нет аккаунтов со входом",
+  settingsTitle: "Настройки",
+  settingsWarmupHint: "Выключено: карточки нет, прогрев не запускается.",
   lidAlertTitle: "Режим крышки включён: Mac не заснёт. Нажми, чтобы выключить",
   lidAlertLabel: (remaining) => `Крышка · ${remaining}`,
   lidAlertLabelNoTimer: "Крышка · без сна",
@@ -243,11 +254,13 @@ const ru: Strings = {
   batteryUntilFull: (eta) => `полная через ${eta}`,
   batteryUntilEmpty: (eta) => `хватит на ${eta}`,
   batteryNoEstimate: "считает оценку",
-  powerAC: "от сети",
-  powerBattery: "от батареи",
+  powerAC: "От сети",
+  powerBattery: "От батареи",
   wattsAdapter: (watts) => `блок ${watts}`,
-  wattsIntoBattery: (watts) => `в батарею ${watts}`,
-  updated: (s) => (s < 5 ? "обновлено только что" : `обновлено ${s} с назад`),
+  powerIntoBattery: "В батарею",
+  powerMac: "Сам Mac",
+  powerMacDraws: (watts) => `Mac берёт ${watts}`,
+  updated: (ago) => `обновлено ${ago} назад`,
   errorPrefix: "caffeinate не запустился",
   commandOff: "Caffeine: выключить",
   commandOn: "Caffeine: включить",
@@ -278,38 +291,38 @@ const uk: Strings = {
   timer: "Таймер",
   timerDetail: "потім сам повернеться у Вимк",
   auto: "Доки працюють агенти",
-  autoDetail: "відпускає через три хвилини після останнього агента",
+  autoDetail: "і ще 3 хв після",
   hours: (n) => `${n} год`,
   minutes: (n) => `${n} хв`,
   displayLabel: "Не гасити екран",
   displayState: (on) => (on ? "екран не гасне" : "екран гасне як завжди"),
   lidLabel: "Можна закрити кришку",
-  lidOff: "Із закритою кришкою Mac засинає. Увімкни, щоб він працював із закритою кришкою на час таймера або в режимі Увімк.",
-  lidIdle: "Обери таймер або Увімк: кришку можна закрити, поки він триває.",
-  lidOn: (remaining) => `Можна закривати кришку · лишилось ${remaining}. Сон повернеться сам.`,
-  lidOnNoTimer: "Сон на цьому Mac вимкнено не через Caffeine.",
-  lidOnForever: "Можна закривати кришку, без обмеження в часі. Вимкне інший режим, перемикач або кнопка в шапці; а також низький заряд і перегрів.",
+  lidOff: "кришка присипляє Mac",
+  lidIdle: "працює з таймером або Увімк",
+  lidOn: (remaining) => `лишилось ${remaining}`,
+  lidOnNoTimer: "сон вимкнено не Caffeine",
+  lidOnForever: "поки не вимкнеш",
   lidAlertLabelForever: "Кришка · завжди",
-  lidEndedBattery: "Вимкнувся сам: був низький заряд.",
-  lidEndedHeat: "Вимкнувся сам: Mac перегрівався.",
-  lidStoppedSleep: "Вимкнено кнопкою «Приспати».",
-  lidStoppedOff: "Вимкнено кнопкою в шапці.",
-  lidStoppedManual: "Сон увімкнули назад не через Caffeine.",
-  lidStoppedUnknown: "Режим кришки вимкнено.",
-  lidPaused: "Зараз закрита кришка приспить Mac.",
+  lidEndedBattery: "вимкнувся: низький заряд",
+  lidEndedHeat: "вимкнувся: перегрів",
+  lidStoppedSleep: "«Приспати» вимкнув",
+  lidStoppedOff: "вимкнули в шапці",
+  lidStoppedManual: "сон увімкнули вручну",
+  lidStoppedUnknown: "вимкнено",
+  lidPaused: "кришка приспить Mac",
   lidResume: "Увімкнути знову",
-  lidSetup: "Потрібно один раз дозволити на Mac: це дозволяє лише одне налаштування живлення.",
-  lidSetupButton: "Дозволити на цьому Mac",
+  lidSetup: "натисни, Mac спитає пароль",
   lidFailed: (message) => `Не вийшло: ${message}`,
   warmupLabel: "Прогрів сесії",
-  warmupOn: (time, fresh) => `Щодня о ${time} одне коротке повідомлення Haiku на кожен акаунт Claude запускає його 5-годинне вікно, і воно скинеться о ${fresh}. Лише поки Mac не спить.`,
-  warmupOff: "Вимкнено. Запускає 5-годинне вікно кожного акаунта заздалегідь, щоб воно скинулось посеред робочого дня.",
-  warmupEnable: "Увімкнути",
-  warmupDisable: "Вимкнути",
+  warmupOn: (fresh) => `скидання вікна о ${fresh}`,
+  warmupOff: "заздалегідь запускає 5-годинне вікно",
   warmupNow: "Прогріти зараз",
   warmupRunning: "Прогріваю…",
-  warmupLast: (at, results) => `Останній: ${at} · ${results}`,
+  warmupLast: (at, results) => `останній ${at} · ${results}`,
+  warmupLastOk: (at) => `останній ${at} ✓`,
   warmupNone: "немає акаунтів із входом",
+  settingsTitle: "Налаштування",
+  settingsWarmupHint: "Вимкнено: картки немає, прогрів не запускається.",
   lidAlertTitle: "Режим кришки ввімкнено: Mac не засне. Натисни, щоб вимкнути",
   lidAlertLabel: (remaining) => `Кришка · ${remaining}`,
   lidAlertLabelNoTimer: "Кришка · без сну",
@@ -325,11 +338,13 @@ const uk: Strings = {
   batteryUntilFull: (eta) => `повна через ${eta}`,
   batteryUntilEmpty: (eta) => `вистачить на ${eta}`,
   batteryNoEstimate: "рахує оцінку",
-  powerAC: "від мережі",
-  powerBattery: "від батареї",
+  powerAC: "Від мережі",
+  powerBattery: "Від батареї",
   wattsAdapter: (watts) => `блок ${watts}`,
-  wattsIntoBattery: (watts) => `у батарею ${watts}`,
-  updated: (s) => (s < 5 ? "оновлено щойно" : `оновлено ${s} с тому`),
+  powerIntoBattery: "У батарею",
+  powerMac: "Сам Mac",
+  powerMacDraws: (watts) => `Mac бере ${watts}`,
+  updated: (ago) => `оновлено ${ago} тому`,
   errorPrefix: "caffeinate не запустився",
   commandOff: "Caffeine: вимкнути",
   commandOn: "Caffeine: увімкнути",
