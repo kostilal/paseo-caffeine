@@ -775,14 +775,7 @@ export function CaffeineSurface({ theme, layout }: PluginSurfaceProps) {
         >
           <Icon name="Coffee" size={22} color={theme.colors.accent} />
         </View>
-        <View style={{ flex: 1, gap: 3 }}>
-          <Text style={{ color: theme.colors.foreground, fontSize: m.title, fontWeight: "700" }}>{strings.title}</Text>
-          {/* The phone gets the line that carries the meaning, not the one that repeats the title. */}
-          {compact ? null : <Text style={{ color: theme.colors.foreground, fontSize: 14 }}>{strings.tagline}</Text>}
-          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 14 }}>
-            {strings.taglineDetail(data?.keepDisplay ?? false)}
-          </Text>
-        </View>
+        <Text style={{ flex: 1, color: theme.colors.foreground, fontSize: m.title, fontWeight: "700" }}>{strings.title}</Text>
       </View>
 
       {isLoading || !data ? (

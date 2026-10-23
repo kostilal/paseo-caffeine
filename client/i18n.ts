@@ -3,8 +3,6 @@ export type Locale = "en" | "ru" | "uk";
 export interface Strings {
   sidebarTitle: string;
   title: string;
-  tagline: string;
-  taglineDetail(keepDisplay: boolean): string;
   stateAwake: string;
   stateAsleep: string;
   remaining(remaining: string): string;
@@ -169,8 +167,6 @@ export interface Strings {
 const en: Strings = {
   sidebarTitle: "Caffeine",
   title: "Caffeine",
-  tagline: "Keeps the Mac awake for your agents.",
-  taglineDetail: (keepDisplay) => (keepDisplay ? "System sleep and the display are both held." : "Only system sleep is held; the display goes dark as usual."),
   stateAwake: "AWAKE",
   stateAsleep: "SLEEPS AS USUAL",
   remaining: (remaining) => `${remaining} left`,
@@ -309,8 +305,6 @@ const en: Strings = {
 const ru: Strings = {
   sidebarTitle: "Кофеин",
   title: "Кофеин",
-  tagline: "Не даёт Mac уснуть, пока работают агенты.",
-  taglineDetail: (keepDisplay) => (keepDisplay ? "Держим и систему, и экран." : "Только сон системы: экран гаснет как обычно."),
   stateAwake: "НЕ СПИТ",
   stateAsleep: "СПИТ КАК ОБЫЧНО",
   remaining: (remaining) => `осталось ${remaining}`,
@@ -449,8 +443,6 @@ const ru: Strings = {
 const uk: Strings = {
   sidebarTitle: "Кофеїн",
   title: "Кофеїн",
-  tagline: "Не дає Mac заснути, доки працюють агенти.",
-  taglineDetail: (keepDisplay) => (keepDisplay ? "Тримаємо і систему, і екран." : "Лише сон системи: екран гасне як зазвичай."),
   stateAwake: "НЕ СПИТЬ",
   stateAsleep: "СПИТЬ ЯК ЗАЗВИЧАЙ",
   remaining: (remaining) => `залишилось ${remaining}`,
