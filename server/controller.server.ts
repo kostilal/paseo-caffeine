@@ -1,4 +1,4 @@
-import type { Battery, LidStatus, SetInput, SetOptionsInput, Status, WarmupStatus } from "../shared/caffeine.shared.ts";
+import { type Battery, type LidStatus, type SetInput, type SetOptionsInput, type Status, type ThermalStatus, type WarmupStatus, thermalStatus } from "../shared/caffeine.shared.ts";
 import type { Keeper } from "./keeper.server.ts";
 import { TICK_MS, type Stored, decide, defaultStored, nextBusyUntil, untilForMinutes } from "./policy.ts";
 
@@ -23,6 +23,9 @@ export interface ControllerDeps {
   };
   /** Session warm-up, checked on the same tick; absent in tests that do not touch it. */
   warmup?: { tick(): Promise<void>; status(): WarmupStatus };
+  /** The heat guard (heat.server.ts), which runs on its own timer; the controller only shows
+   *  it and keeps Caffeine's hold off while a trip holds with the lid closed. */
+  heat?: { status(): ThermalStatus; holdSuspended(): boolean };
   now?: () => number;
   tickMs?: number;
   log?: (line: string) => void;
@@ -47,6 +50,9 @@ export interface Controller {
  * same routine runs on a timer and right after every `set`, so a switch is felt at once
  * and a timer expires within TICK_MS of its deadline.
  */
+/** What a status says about the heat while there is no guard to ask. */
+const NO_THERMAL: ThermalStatus = thermalStatus.parse({});
+
 export function createController(deps: ControllerDeps): Controller {
   const now = deps.now ?? Date.now;
   const tickMs = deps.tickMs ?? TICK_MS;
@@ -57,6 +63,7 @@ export function createController(deps: ControllerDeps): Controller {
   let agents = 0;
   let battery: Battery | null = null;
   let lastReason = "";
+  let wasSuspended = false;
   let tickAt = "";
   let timer: ReturnType<typeof setInterval> | null = null;
   let stopped = false;
@@ -76,6 +83,7 @@ export function createController(deps: ControllerDeps): Controller {
       battery,
       lid: deps.lid?.status() ?? { on: false, until: "", minutes: 0, forever: false, ended: "", stopped: "", setup: "unknown", error: "" },
       warmup: deps.warmup?.status() ?? { enabled: false, time: "06:00", nextAt: "", lastAt: "", results: [], running: false },
+      thermal: deps.heat?.status() ?? NO_THERMAL,
     };
   }
 
@@ -163,11 +171,16 @@ export function createController(deps: ControllerDeps): Controller {
     }
     dropUnwantedLid();
 
-    if (decision.active) {
+    // A heat trip with the lid closed outranks the mode: on the charger caffeinate's `-s` would
+    // turn every sleep into a DarkWake. The mode itself is left as it is.
+    const suspended = deps.heat?.holdSuspended() ?? false;
+    if (decision.active && !suspended) {
       deps.keeper.hold(stored.mode === "timer" ? Date.parse(stored.until) : undefined, stored.keepDisplay);
     } else {
       deps.keeper.release();
     }
+    if (suspended !== wasSuspended) log(suspended ? "caffeine: hold suspended by the heat guard" : "caffeine: hold no longer suspended");
+    wasSuspended = suspended;
 
     if (decision.reason !== lastReason) {
       log(`caffeine: ${decision.reason} (active=${decision.active}, agents=${agents})`);

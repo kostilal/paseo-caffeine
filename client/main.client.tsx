@@ -5,7 +5,8 @@ import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Animated, Linking, Pressable, ScrollView, Text, View } from "react-native";
-import { SLEEP_DELAY_MS, type Battery, type SetInput, type SetOptionsInput, type Status, getStatus, preferences, runWarmup, setLid, setMode, setOptions, setWarmup, setupLid, sleepNow } from "../shared/caffeine.shared.ts";
+import { SLEEP_DELAY_MS, type Battery, type SetInput, type SetOptionsInput, type Status, dismissThermal, getStatus, preferences, runWarmup, setLid, setMode, setOptions, setWarmup, setupLid, sleepNow } from "../shared/caffeine.shared.ts";
+import { FanPopup, HeatEventBanner, HeatSection } from "./heat.tsx";
 import { type Strings, detectAppLocale, formatRemaining, t } from "./i18n.ts";
 import { SILENCE_TIMEOUT_MS, type SleepEvent, type SleepPhase, isSleepInFlight, nextSleepPhase } from "./sleep-phase.ts";
 
@@ -209,6 +210,9 @@ function StateCard({
   now,
   updatedAgo,
   pad,
+  dismissing,
+  onDismiss,
+  onFans,
 }: {
   status: Status;
   theme: PluginTheme;
@@ -216,6 +220,9 @@ function StateCard({
   now: number;
   updatedAgo: number | null;
   pad: number;
+  dismissing: boolean;
+  onDismiss(): void;
+  onFans(): void;
 }) {
   const awake = status.active;
   const colour = awake ? theme.colors.statusSuccess : theme.colors.foregroundMuted;
@@ -254,6 +261,8 @@ function StateCard({
         </View>
       ) : null}
 
+      <HeatEventBanner event={status.thermal.event} theme={theme} strings={strings} busy={dismissing} onDismiss={onDismiss} />
+
       {/* How old the reading is matters only once it is old: a fresh one goes unsaid. */}
       {updatedAgo !== null && updatedAgo * 1000 > STALE_MS ? (
         <Text style={{ color: theme.colors.statusWarning, fontSize: 12 }}>{strings.updated(formatRemaining(updatedAgo * 1000, strings))}</Text>
@@ -267,6 +276,9 @@ function StateCard({
           <PowerSection battery={status.battery} theme={theme} strings={strings} />
         </>
       ) : null}
+
+      <View style={{ height: 1, backgroundColor: theme.colors.border }} />
+      <HeatSection status={status} theme={theme} strings={strings} now={now} onFans={onFans} />
 
       {status.error ? (
         <Text style={{ color: theme.colors.statusDanger, fontSize: 13 }}>{`${strings.errorPrefix}: ${status.error}`}</Text>
@@ -525,13 +537,19 @@ function LidCard({
   // a low battery or heat turned it off, and nothing turns it back on by itself. Said plainly,
   // with a way back, because a closed lid now sleeps the Mac.
   const paused = !needsSetup && !lid.on && status.lidClosed && (status.mode === "timer" || status.mode === "on");
+  // A heat trip that has not cooled down: lid mode stays off, and says until when.
+  const latch = status.thermal.latch;
+  const cooling = latch !== null && !status.thermal.cool;
+  const coolLeft = status.thermal.coolAt ? formatRemaining(Math.max(0, Date.parse(status.thermal.coolAt) - now), strings) : "";
   let detail: string;
-  if (needsSetup && !lid.on) detail = strings.lidSetup;
+  if (latch && !lid.on) detail = cooling ? (coolLeft ? strings.lidCooling(coolLeft) : strings.heatCoolingUnknown) : strings.lidCooled;
+  else if (needsSetup && !lid.on) detail = strings.lidSetup;
   else if (lid.on && !ours) detail = strings.lidOnNoTimer;
   else if (lid.on) detail = lid.forever ? strings.lidOnForever : strings.lidOn(formatRemaining(remainingMs, strings));
   else if (paused) detail = `${pausedReason(lid, strings)} · ${strings.lidPaused}`;
   else detail = status.lidClosed ? strings.lidIdle : strings.lidOff;
-  const failed = lid.error !== "" && lid.error !== "needs-setup" ? strings.lidFailed(lid.error) : "";
+  const failed =
+    lid.error === "cooling" ? (cooling ? "" : strings.lidCoolingError) : lid.error !== "" && lid.error !== "needs-setup" ? strings.lidFailed(lid.error) : "";
   // When paused the reason is already the detail; a second line would say it twice.
   const endedNote = lid.on || paused ? "" : lid.ended === "heat" ? strings.lidEndedHeat : lid.ended === "battery" ? strings.lidEndedBattery : "";
   return (
@@ -549,7 +567,7 @@ function LidCard({
       // nothing until the permission is there.
       onPress={() => (busy ? undefined : needsSetup && !status.lidClosed ? onSetup() : onToggle(!status.lidClosed))}
     >
-      {paused ? (
+      {paused && !cooling ? (
         <View style={{ flexDirection: "row", marginTop: 4, opacity: busy ? 0.6 : 1 }}>
           <Chip label={strings.lidResume} selected={false} theme={theme} onPress={() => (busy ? undefined : onResume())} />
         </View>
@@ -658,6 +676,8 @@ export function CaffeineSurface({ theme, layout }: PluginSurfaceProps) {
   const askWarmupNow = useRpc(runWarmup);
   const askLidSetup = useRpc(setupLid);
   const askLid = useRpc(setLid);
+  const askDismiss = useRpc(dismissThermal);
+  const [fanOpen, setFanOpen] = useState(false);
   const queryClient = useQueryClient();
   // Session warm-up switched off in Settings is no tile at all. Hidden until the answer is in,
   // so a tile switched off does not flash up first; a host that cannot answer keeps the default.
@@ -720,9 +740,17 @@ export function CaffeineSurface({ theme, layout }: PluginSurfaceProps) {
   const timerMinutes = data?.mode === "timer" ? minutesOf(data, now) : null;
   const updatedAgo = data?.tickAt ? Math.max(0, Math.round((now - Date.parse(data.tickAt)) / 1000)) : null;
 
+  const dismiss = useMutation({
+    mutationFn: () => askDismiss({}),
+    onSuccess: (status) => queryClient.setQueryData(QUERY_KEY, status),
+  });
+
   return (
-    // Still a ScrollView: the content is meant to fit, but a small enough phone would
-    // otherwise cut the switch off with no way to reach it.
+    // The fan popup sits over the page, outside the scroll, so it stays put while the page
+    // under it does not move.
+    <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
+    {/* Still a ScrollView: the content is meant to fit, but a small enough phone would
+        otherwise cut the switch off with no way to reach it. */}
     <ScrollView
       style={{ backgroundColor: theme.colors.surface0 }}
       contentContainerStyle={{ padding: m.gutter, gap: m.gap, maxWidth: 760, width: "100%", alignSelf: "center" }}
@@ -756,7 +784,17 @@ export function CaffeineSurface({ theme, layout }: PluginSurfaceProps) {
         <ActivityIndicator color={theme.colors.accent} />
       ) : (
         <>
-          <StateCard status={data} theme={theme} strings={strings} now={now} updatedAgo={updatedAgo} pad={m.pad} />
+          <StateCard
+            status={data}
+            theme={theme}
+            strings={strings}
+            now={now}
+            updatedAgo={updatedAgo}
+            pad={m.pad}
+            dismissing={dismiss.isPending}
+            onDismiss={() => dismiss.mutate()}
+            onFans={() => setFanOpen(true)}
+          />
 
           {compact ? null : (
             <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600", letterSpacing: 1, textTransform: "uppercase" }}>
@@ -883,5 +921,7 @@ export function CaffeineSurface({ theme, layout }: PluginSurfaceProps) {
         </>
       )}
     </ScrollView>
+    {fanOpen && data ? <FanPopup status={data} theme={theme} strings={strings} onClose={() => setFanOpen(false)} /> : null}
+    </View>
   );
 }

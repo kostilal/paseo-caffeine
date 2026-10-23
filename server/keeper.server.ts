@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn as nodeSpawn } from "node:child_process";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 
 export interface Keeper {
   active(): boolean;
@@ -25,6 +26,9 @@ export interface KeeperOptions {
   guardPid?: number;
   now?: () => number;
   spawn?: Spawner;
+  /** Where "<caffeinate pid> <plugin pid>" is written while a child runs, so the LaunchAgent
+   *  guard can stop this caffeinate and no other (see heatShell in lid.server.ts). */
+  pidFile?: string;
 }
 
 /**
@@ -74,6 +78,23 @@ export function createKeeper(options: KeeperOptions = {}): Keeper {
         return;
       }
       child = started;
+      if (options.pidFile && started.pid) {
+        try {
+          writeFileSync(options.pidFile, `${started.pid} ${guardPid}\n`);
+        } catch {
+          // The guard then cannot stop it, and the plugin's own release still can.
+        }
+      }
+      // Only while the file still names this child: a new one may already have replaced it.
+      const forget = () => {
+        if (!options.pidFile || !started.pid) return;
+        try {
+          if (readFileSync(options.pidFile, "utf8").startsWith(`${started.pid} `)) rmSync(options.pidFile, { force: true });
+        } catch {
+          // Already gone.
+        }
+      };
+      started.on("exit", forget);
       started.on("error", (error: Error) => {
         // ENOENT and friends arrive here rather than from spawn() itself.
         lastError = `${command}: ${error.message}`;

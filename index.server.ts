@@ -1,8 +1,12 @@
 import { hostname } from "node:os";
+import { performance } from "node:perf_hooks";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { getStatus, preferences, runWarmup, setLid, setMode, setOptions, setWarmup, setupLid, sleepNow } from "./shared/caffeine.shared.ts";
+import { dismissThermal, getStatus, preferences, runWarmup, setLid, setMode, setOptions, setWarmup, setupLid, sleepNow } from "./shared/caffeine.shared.ts";
 import { createWarmup, systemWarmupDeps } from "./server/warmup.server.ts";
-import { createLid, systemLidDeps } from "./server/lid.server.ts";
+import { HEAT_FILES, createLid, systemLidDeps } from "./server/lid.server.ts";
+import { emergencySleep, parseSystemSleepHolders } from "./server/emergency.server.ts";
+import { HEAT_TICK_MS, createHeat, fileLatch, fileLock } from "./server/heat.server.ts";
+import { runCommand, systemHeatSensors } from "./server/sensors.server.ts";
 import { createAgentsProbe } from "./server/agents.server.ts";
 import { createBatteryProbe } from "./server/battery.server.ts";
 import { describeCaffeine, describeRpc } from "./server/capabilities.server.ts";
@@ -36,18 +40,57 @@ export default function contribute(server: PluginServerContext) {
     },
   });
   const sleeper = createSleeper({ log: (line) => console.log(line) });
-  const lid = createLid(systemLidDeps((line) => console.log(line)));
+  const log = (line: string) => console.log(line);
+  const keeper = createKeeper({ pidFile: HEAT_FILES.keeperPid });
+  // `heat` is referenced before its declaration on purpose: lid mode asks it only once a
+  // person turns lid mode on, long after both exist.
+  const lid = createLid({ ...systemLidDeps(log), gate: () => heat.gate(), latched: () => heat.latched() });
+  const heatLock = fileLock(HEAT_FILES.lock);
+  const heatLatch = fileLatch(HEAT_FILES.latch);
+  const heat = createHeat({
+    sensors: systemHeatSensors(log),
+    armed: () => lid.status().on,
+    files: HEAT_FILES,
+    emergency: (trip, dryRun) =>
+      emergencySleep(trip, {
+        dryRun: () => dryRun,
+        lock: () => heatLock.take(),
+        unlock: () => heatLock.release(),
+        writeLatch: (record) => heatLatch.write(record),
+        allowSleep: () => lid.endForHeat(),
+        releaseHold: () => keeper.release(),
+        holders: async () =>
+          parseSystemSleepHolders((await runCommand("/usr/bin/pmset", ["-g", "assertions"])).stdout, keeper.pid() === null ? [] : [keeper.pid() as number]),
+        sleepNow: async () => void (await runCommand("/usr/bin/pmset", ["sleepnow"])),
+        // The monotonic clock stops while the Mac sleeps and the wall clock does not.
+        waitGap: (ms) =>
+          new Promise((resolve) => {
+            const wall = Date.now();
+            const monotonic = performance.now();
+            setTimeout(() => resolve(Date.now() - wall - (performance.now() - monotonic)), ms);
+          }),
+        now: () => Date.now(),
+        log,
+      }),
+    endForHeat: () => lid.endForHeat(),
+    resleep: async () => {
+      keeper.release();
+      await runCommand("/usr/bin/pmset", ["sleepnow"]);
+    },
+    log,
+  });
   const warmup = createWarmup(systemWarmupDeps((line) => console.log(line)));
   const controller: Controller = createController({
     read: () => readStored(),
     write: (stored) => writeStored(stored),
-    keeper: createKeeper(),
+    keeper,
     runningCount: () => probe.runningCount(),
     readBattery: () => power.read(),
     wakeUrl: () => waker.url(),
     sleepNow: () => sleeper.request(),
     lid,
     warmup,
+    heat,
     log: (line) => console.log(line),
   });
 
@@ -72,10 +115,34 @@ export default function contribute(server: PluginServerContext) {
   // "on" overnight stays on through a daemon restart without anybody opening the app.
   void startedServer().catch((error) => console.error(`caffeine: start failed: ${String(error)}`));
 
-  // The preferences its Settings screen edits (client/settings.tsx). That screen switches
-  // warm-up off itself when it takes the tile off the page: the SDK this builds against gives
-  // the server no way to read them.
-  server.registerSettings(preferences);
+  // The preferences its Settings screen and the fan popup edit. SDK 0.8's types say
+  // registerSettings returns nothing; the host has handed back { read, subscribe } since
+  // Paseo 0.11 (plugin-process `registerSettings`), so it is used where it is there and the
+  // heat guard keeps its defaults where it is not. Warm-up's switch is handled by the
+  // Settings screen itself (client/settings.tsx).
+  let stopPreferences: () => unknown = () => undefined;
+  try {
+    const handle = server.registerSettings(preferences) as unknown as Partial<HostSettings> | undefined;
+    const apply = (state: HostSettingsState) => {
+      if (state.status === "ready" && state.values) heat.setStored(state.values);
+    };
+    if (typeof handle?.subscribe === "function") stopPreferences = handle.subscribe(apply);
+    if (typeof handle?.read === "function") void handle.read().then(apply).catch((error) => console.error(`caffeine: preferences unreadable: ${String(error)}`));
+  } catch (error) {
+    console.error(`caffeine: preferences unavailable, heat guard on its defaults: ${String(error)}`);
+  }
+
+  // The heat guard looks every 15 s, on its own timer: the controller's 30 s tick waits on
+  // agents and the battery, and a guard should not wait on those.
+  void heat.tick().catch((error) => console.error(`caffeine: heat check failed: ${String(error)}`));
+  const heatWatch = setInterval(() => void heat.tick().catch((error) => console.error(`caffeine: heat check failed: ${String(error)}`)), HEAT_TICK_MS);
+
+  server.handle(dismissThermal, async (_input, { paseo }) => {
+    probe.remember(paseo);
+    const instance = await startedServer();
+    await heat.dismiss();
+    return instance.status();
+  });
 
   server.handle(getStatus, async (_input, { paseo }) => {
     probe.remember(paseo);
@@ -147,9 +214,21 @@ export default function contribute(server: PluginServerContext) {
 
   return () => {
     clearInterval(lidWatch);
+    clearInterval(heatWatch);
+    void stopPreferences();
     controller.stop();
     waker.stop();
   };
 }
 
 const LID_CHECK_MS = 60_000;
+
+/** The slice of the host's settings handle the server uses (see registerSettings above). */
+interface HostSettingsState {
+  status: string;
+  values?: Record<string, unknown>;
+}
+interface HostSettings {
+  read(): Promise<HostSettingsState>;
+  subscribe(listener: (state: HostSettingsState) => void): () => unknown;
+}

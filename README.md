@@ -59,6 +59,62 @@ until its deadline, On's for ten minutes (macOS's own low-battery and thermal sh
 apply). By hand: `sudo pmset -a disablesleep 0`. To undo the permission:
 `sudo rm /etc/sudoers.d/paseo-caffeine`.
 
+### Heat protection
+
+Lid mode is also what takes macOS's own way out of a hot bag away: the kernel checks
+`disablesleep` before its thermal-emergency sleep (xnu `checkSystemSleepAllowed`), so while lid
+mode is on nothing in macOS would put an overheating Mac to sleep. Caffeine does, while lid mode
+is on (off it, a closed lid sleeps the Mac and the kernel's emergency sleep gets past
+caffeinate). Four triggers, read every 15 s:
+
+- **Thermal pressure**, macOS's own verdict over all its sensors (`com.apple.system.
+  thermalpressurelevel`, public in `OSThermalNotification.h`, readable without root): Heavy held
+  for 60 s by default; Moderate and its delay can be picked in Settings, and Heavy still fires
+  within 60 s under it; Trapping and above at once, always. On Apple Silicon this replaces
+  `pmset -g therm`, which never reports anything there.
+- **The battery at 45 °C**, two readings in a row: Apple's upper storage temperature for a
+  MacBook Pro and the usual Li-ion charging limit, read the same way on every Mac. Fixed.
+- **No readings** (neither pressure nor battery) for 90 s with the lid closed. Fixed.
+- **The fans**, with the lid closed: any fan at the chosen share of its own maximum (85 % by
+  default, 5 % steps, from 10 points above the fans' floor to 95 %) for the chosen time (60 s by
+  default). Set in the popup that opens from the fan reading on the page. Fans stay at their
+  floor in a closed bag, so this one catches a Mac working flat out, not a hot bag.
+
+A trip runs one sequence, from the plugin or from the LaunchAgent guard, whichever sees it
+first (a lock keeps it to one): the latch is written; `sudo -n pmset -a disablesleep 0`,
+confirmed by `pmset -g`; Caffeine's own caffeinate is stopped (only that one: the pid it wrote,
+still `caffeinate … -w <plugin pid>`); `pmset sleepnow`; then a look whether it slept (the wall
+clock running ahead of the monotonic one), up to three tries, with whoever else holds
+PreventSystemSleep written down if it did not. While the latch holds, lid mode stays off,
+Caffeine's hold stays off with the lid closed, and a Mac woken with the lid closed goes back to
+sleep, at most once a minute. Lid mode comes back only by hand, once the battery has stayed at
+or under 38 °C with the pressure Nominal for the cool-down (5 minutes by default, Settings).
+
+The LaunchAgent guard runs the same rules in sh from `~/.jobby-jobs/caffeine-thermal.conf`, so
+the protection does not depend on Paseo, the plugin, the relay or the network. It is restarted
+by launchd if it dies (`KeepAlive`), logs to `~/.jobby-jobs/caffeine-guard.log`, and switches
+sleep back on when it is stopped at logout (but not when the plugin replaces it, which it says
+through `~/.jobby-jobs/caffeine-guard-handover`).
+
+CPU temperature and fan speeds come from a small read-only helper (`server/sensors-source.ts`),
+which the plugin builds with clang on first use into `~/.jobby-jobs/bin/`. Without the Xcode
+command-line tools it is not built (clang is not even started, so macOS does not offer to install
+them): the page then shows no CPU and "—" for the fans, and the fan trigger is off; pressure and
+the battery need nothing built.
+
+**Dry run and simulation.** While `~/.jobby-jobs/caffeine-thermal-dryrun` exists, both halves
+only say what they would have done (in the log and on the page, marked "dry run"); nothing is
+switched, stopped or put to sleep. `~/.jobby-jobs/caffeine-thermal-simulate` replaces the
+plugin's readings for looking at the page — any of `pressure=0…4|none`, `battery=45.5|none`,
+`cpu=88|none`, `fans=rpm/min/max,…|none|unknown`, `lid=open|closed`, `armed=1` (pretend lid mode is
+on) — and a simulated reading is always a dry run. The guard never reads the simulation.
+
+**What it cannot promise.** macOS gives no way to guarantee sleep: on the charger another app's
+PreventSystemSleep turns `sleepnow` into a DarkWake and cannot be taken away without root (it is
+named on the page instead); if sudo or pmset fail, `disablesleep` stays 1 and nothing sleeps; a
+dead or misreading guard does nothing; Power Nap, network and Bluetooth wakes come back (the latch
+sends the Mac down again). The pressure key on Intel Macs is untested.
+
 The surface also shows the Mac's own battery: charge, whether the charger is in, and how
 long the charge has left — or how long until it is full. Under it, the watts, the way
 Wattage Connected shows them: on the charger, a bar as long as the charger's rating, split
@@ -261,3 +317,13 @@ happy either way; Node is not.
 **A controller started in a test has to be stopped in it.** `start()` opens an interval,
 and `node --test` waits on the handle: one forgotten `stop()` turns a 100 ms file into a
 run that only ends when the timeout does.
+
+**The heat guard is tested without heat and without sleep.** `server/thermal.test.ts` drives
+the rules with readings and a clock; `server/emergency.test.ts` and `server/heat.test.ts` run
+the sequence and the latch against stand-ins; `server/guard.test.ts` runs the guard's real sh
+against a pmset, sudo, notifyutil, ioreg and ps that only write down what they were asked (a
+"sleepnow" moves a fake clock). The only tests that touch the Mac read it: the guard's and the
+helper's readings of this machine's sensors. What still needs a real sleep, and so a person
+there to wake it, is the last step: that `pmset sleepnow` sleeps after `disablesleep 0` with the
+lid closed, that the wake-and-resleep loop behaves on real wakes, and that a logout switches
+sleep back on.

@@ -62,6 +62,67 @@ export interface Strings {
   /** The Settings screen of its own: its title, and what switching warm-up off there does. */
   settingsTitle: string;
   settingsWarmupHint: string;
+  /** The heat block on the page (client/heat.tsx). */
+  heatTitle: string;
+  /** Thermal pressure, 0 nominal … 4 sleeping. */
+  pressureLevel(level: number): string;
+  pressureUnknown: string;
+  heatDryRun: string;
+  heatSimulated: string;
+  heatPending(reason: string, wait: string): string;
+  heatPendingNext(reason: string): string;
+  heatBlind(wait: string): string;
+  heatCooling(left: string): string;
+  heatCoolingUnknown: string;
+  heatCooled: string;
+  /** What tripped the guard: trapping, pressure, battery, blind or fans. */
+  heatReason(reason: string): string;
+  rpm(value: string): string;
+  seconds(n: number): string;
+  /** The banner after a trip; `time` is "HH:MM". */
+  heatEventSlept(time: string, reason: string, detail: string): string;
+  heatEventDry(time: string, reason: string, detail: string): string;
+  heatEventFailed(time: string, reason: string, holders: string): string;
+  heatEventSeen(time: string, reason: string, detail: string): string;
+  heatEventOk: string;
+  /** The lid tile while a trip cools down. */
+  lidCooling(left: string): string;
+  lidCooled: string;
+  lidCoolingError: string;
+  /** The fan popup. */
+  fanTitle: string;
+  fanLabel(n: number): string;
+  fanThreshold: string;
+  fanFor: string;
+  fanLidOnly: string;
+  fanManual: string;
+  fanNoData: string;
+  fanBelowCurrent: string;
+  fanReset: string;
+  fanSave: string;
+  fanClose: string;
+  fanAdjust: string;
+  /** The heat guard's section of the Settings screen. */
+  settingsThermalTitle: string;
+  settingsPressure: string;
+  settingsPressureHeavy: string;
+  settingsPressureModerate: string;
+  settingsDelay: string;
+  settingsDelayHint: string;
+  settingsTrapping: string;
+  settingsTrappingHint: string;
+  settingsBattery: string;
+  settingsBatteryHint: string;
+  settingsBlind: string;
+  settingsBlindHint: string;
+  settingsCooldown: string;
+  settingsCooldownHint: string;
+  settingsAfterTrip: string;
+  settingsAfterTripHint: string;
+  settingsFansNote: string;
+  settingsFansNoteHint: string;
+  settingsThermalReset: string;
+  settingsThermalResetAction: string;
   /** The header alert while lid mode is on. */
   lidAlertTitle: string;
   lidAlertLabel(remaining: string): string;
@@ -155,6 +216,60 @@ const en: Strings = {
   warmupNone: "no logged-in accounts",
   settingsTitle: "Settings",
   settingsWarmupHint: "Off: no tile on the page, and no warm-up runs.",
+  heatTitle: "Heat",
+  pressureLevel: (level) => ["Nominal", "Moderate", "Heavy", "Trapping", "Sleeping"][level] ?? String(level),
+  pressureUnknown: "pressure unknown",
+  heatDryRun: "dry run",
+  heatSimulated: "simulated",
+  heatPending: (reason, wait) => `${reason} · sleep in ${wait}`,
+  heatPendingNext: (reason) => `${reason} · sleep at the next reading`,
+  heatBlind: (wait) => `No heat readings · with the lid closed, sleep in ${wait}`,
+  heatCooling: (left) => `Cooling down after overheating · ${left} left`,
+  heatCoolingUnknown: "Cooling down after overheating",
+  heatCooled: "Cooled down · lid mode can go back on",
+  heatReason: (reason) => ({ trapping: "critical pressure", pressure: "pressure", battery: "battery", blind: "no readings", fans: "fans" } as Record<string, string>)[reason] ?? reason,
+  rpm: (value) => `${value} rpm`,
+  seconds: (n) => `${n} s`,
+  heatEventSlept: (time, reason, detail) => `Put the Mac to sleep at ${time}: ${reason} (${detail})`,
+  heatEventDry: (time, reason, detail) => `Dry run: would have put the Mac to sleep at ${time}: ${reason} (${detail})`,
+  heatEventFailed: (time, reason, holders) => `Could not put the Mac to sleep at ${time}: ${reason}; held by ${holders}`,
+  heatEventSeen: (time, reason, detail) => `Overheating at ${time}: ${reason} (${detail})`,
+  heatEventOk: "OK",
+  lidCooling: (left) => `overheated · cooling, ${left} left`,
+  lidCooled: "overheated · cooled down, can go back on",
+  lidCoolingError: "still cooling down after overheating",
+  fanTitle: "Fans",
+  fanLabel: (n) => `Fan ${n}`,
+  fanThreshold: "Sleep when any fan stays above",
+  fanFor: "for",
+  fanLidOnly: "Only with the lid closed, in lid mode.",
+  fanManual: "Another app controls the fans: this threshold may not fire, or fire early.",
+  fanNoData: "Fan speed cannot be read: the fan threshold is off; temperature and pressure still guard the Mac.",
+  fanBelowCurrent: "Below the current speed: the Mac would go to sleep almost at once.",
+  fanReset: "Reset",
+  fanSave: "Save",
+  fanClose: "Close",
+  fanAdjust: "Fan threshold",
+  settingsThermalTitle: "Heat protection (lid mode)",
+  settingsPressure: "Sensitivity",
+  settingsPressureHeavy: "Heavy (default)",
+  settingsPressureModerate: "Moderate: earlier, more false alarms",
+  settingsDelay: "Delay",
+  settingsDelayHint: "How long the pressure has to hold before the Mac sleeps.",
+  settingsTrapping: "Trapping and above",
+  settingsTrappingHint: "Sleep at once. Fixed.",
+  settingsBattery: "Battery",
+  settingsBatteryHint: "Sleep at 45 °C. Fixed.",
+  settingsBlind: "No readings",
+  settingsBlindHint: "With the lid closed: sleep after 90 s. Fixed.",
+  settingsCooldown: "Cool-down before lid mode again",
+  settingsCooldownHint: "Battery at or under 38 °C and the pressure Nominal, the whole time.",
+  settingsAfterTrip: "After overheating",
+  settingsAfterTripHint: "Lid mode goes back on only by hand.",
+  settingsFansNote: "Fan threshold",
+  settingsFansNoteHint: "Set from the fan icon on the main page.",
+  settingsThermalReset: "Heat protection defaults",
+  settingsThermalResetAction: "Reset",
   lidAlertTitle: "Lid mode is on: this Mac will not sleep. Press to turn it off",
   lidAlertLabel: (remaining) => `Lid · ${remaining}`,
   lidAlertLabelNoTimer: "Lid · no sleep",
@@ -239,6 +354,60 @@ const ru: Strings = {
   warmupNone: "нет аккаунтов со входом",
   settingsTitle: "Настройки",
   settingsWarmupHint: "Выключено: карточки нет, прогрев не запускается.",
+  heatTitle: "Нагрев",
+  pressureLevel: (level) => ["Норма", "Умеренное", "Сильное", "Критическое", "Сон"][level] ?? String(level),
+  pressureUnknown: "давление неизвестно",
+  heatDryRun: "сухой режим",
+  heatSimulated: "симуляция",
+  heatPending: (reason, wait) => `${reason} · сон через ${wait}`,
+  heatPendingNext: (reason) => `${reason} · сон на следующем замере`,
+  heatBlind: (wait) => `Нет данных о нагреве · с закрытой крышкой сон через ${wait}`,
+  heatCooling: (left) => `Остывает после перегрева · ещё ${left}`,
+  heatCoolingUnknown: "Остывает после перегрева",
+  heatCooled: "Остыл · режим крышки можно включить",
+  heatReason: (reason) => ({ trapping: "критическое давление", pressure: "давление", battery: "батарея", blind: "нет данных", fans: "кулеры" } as Record<string, string>)[reason] ?? reason,
+  rpm: (value) => `${value} об/мин`,
+  seconds: (n) => `${n} с`,
+  heatEventSlept: (time, reason, detail) => `Усыпил Mac в ${time}: ${reason} (${detail})`,
+  heatEventDry: (time, reason, detail) => `Сухой режим: усыпил бы в ${time}: ${reason} (${detail})`,
+  heatEventFailed: (time, reason, holders) => `Не удалось усыпить в ${time}: ${reason}; сон держит ${holders}`,
+  heatEventSeen: (time, reason, detail) => `Перегрев в ${time}: ${reason} (${detail})`,
+  heatEventOk: "Понятно",
+  lidCooling: (left) => `перегрев · остывает, ещё ${left}`,
+  lidCooled: "перегрев · остыл, можно включить",
+  lidCoolingError: "ещё остывает после перегрева",
+  fanTitle: "Кулеры",
+  fanLabel: (n) => `Кулер ${n}`,
+  fanThreshold: "Усыпить, если любой кулер выше",
+  fanFor: "дольше",
+  fanLidOnly: "Только с закрытой крышкой в режиме крышки.",
+  fanManual: "Кулерами управляет другая программа: порог может не сработать или сработать раньше.",
+  fanNoData: "Обороты не читаются: защита по кулерам выключена, температура и давление по-прежнему следят.",
+  fanBelowCurrent: "Ниже текущих оборотов: Mac уснёт почти сразу.",
+  fanReset: "Сбросить",
+  fanSave: "Сохранить",
+  fanClose: "Закрыть",
+  fanAdjust: "Порог кулеров",
+  settingsThermalTitle: "Термозащита (режим крышки)",
+  settingsPressure: "Чувствительность",
+  settingsPressureHeavy: "Сильное (по умолчанию)",
+  settingsPressureModerate: "Умеренное: раньше, больше ложных",
+  settingsDelay: "Задержка",
+  settingsDelayHint: "Сколько давление должно держаться, прежде чем Mac уснёт.",
+  settingsTrapping: "Критическое и выше",
+  settingsTrappingHint: "Сон сразу. Не меняется.",
+  settingsBattery: "Батарея",
+  settingsBatteryHint: "Сон при 45 °C. Не меняется.",
+  settingsBlind: "Нет данных",
+  settingsBlindHint: "С закрытой крышкой: сон через 90 с. Не меняется.",
+  settingsCooldown: "Остывание перед повтором",
+  settingsCooldownHint: "Батарея не выше 38 °C и давление «Норма» всё это время.",
+  settingsAfterTrip: "После перегрева",
+  settingsAfterTripHint: "Режим крышки включается только вручную.",
+  settingsFansNote: "Порог кулеров",
+  settingsFansNoteHint: "Настраивается по значку вентилятора на главной.",
+  settingsThermalReset: "Термозащита по умолчанию",
+  settingsThermalResetAction: "Сбросить",
   lidAlertTitle: "Режим крышки включён: Mac не заснёт. Нажми, чтобы выключить",
   lidAlertLabel: (remaining) => `Крышка · ${remaining}`,
   lidAlertLabelNoTimer: "Крышка · без сна",
@@ -323,6 +492,60 @@ const uk: Strings = {
   warmupNone: "немає акаунтів із входом",
   settingsTitle: "Налаштування",
   settingsWarmupHint: "Вимкнено: картки немає, прогрів не запускається.",
+  heatTitle: "Нагрів",
+  pressureLevel: (level) => ["Норма", "Помірне", "Сильне", "Критичне", "Сон"][level] ?? String(level),
+  pressureUnknown: "тиск невідомий",
+  heatDryRun: "сухий режим",
+  heatSimulated: "симуляція",
+  heatPending: (reason, wait) => `${reason} · сон через ${wait}`,
+  heatPendingNext: (reason) => `${reason} · сон на наступному замірі`,
+  heatBlind: (wait) => `Немає даних про нагрів · із закритою кришкою сон через ${wait}`,
+  heatCooling: (left) => `Остигає після перегріву · ще ${left}`,
+  heatCoolingUnknown: "Остигає після перегріву",
+  heatCooled: "Охолов · режим кришки можна ввімкнути",
+  heatReason: (reason) => ({ trapping: "критичний тиск", pressure: "тиск", battery: "батарея", blind: "немає даних", fans: "кулери" } as Record<string, string>)[reason] ?? reason,
+  rpm: (value) => `${value} об/хв`,
+  seconds: (n) => `${n} с`,
+  heatEventSlept: (time, reason, detail) => `Приспав Mac о ${time}: ${reason} (${detail})`,
+  heatEventDry: (time, reason, detail) => `Сухий режим: приспав би о ${time}: ${reason} (${detail})`,
+  heatEventFailed: (time, reason, holders) => `Не вдалося приспати о ${time}: ${reason}; сон тримає ${holders}`,
+  heatEventSeen: (time, reason, detail) => `Перегрів о ${time}: ${reason} (${detail})`,
+  heatEventOk: "Зрозуміло",
+  lidCooling: (left) => `перегрів · остигає, ще ${left}`,
+  lidCooled: "перегрів · охолов, можна ввімкнути",
+  lidCoolingError: "ще остигає після перегріву",
+  fanTitle: "Кулери",
+  fanLabel: (n) => `Кулер ${n}`,
+  fanThreshold: "Приспати, якщо будь-який кулер вище",
+  fanFor: "довше",
+  fanLidOnly: "Лише із закритою кришкою в режимі кришки.",
+  fanManual: "Кулерами керує інша програма: поріг може не спрацювати або спрацювати раніше.",
+  fanNoData: "Оберти не читаються: захист за кулерами вимкнено, температура й тиск і далі стежать.",
+  fanBelowCurrent: "Нижче поточних обертів: Mac засне майже одразу.",
+  fanReset: "Скинути",
+  fanSave: "Зберегти",
+  fanClose: "Закрити",
+  fanAdjust: "Поріг кулерів",
+  settingsThermalTitle: "Термозахист (режим кришки)",
+  settingsPressure: "Чутливість",
+  settingsPressureHeavy: "Сильне (за замовчуванням)",
+  settingsPressureModerate: "Помірне: раніше, більше хибних",
+  settingsDelay: "Затримка",
+  settingsDelayHint: "Скільки тиск має триматися, перш ніж Mac засне.",
+  settingsTrapping: "Критичне і вище",
+  settingsTrappingHint: "Сон одразу. Не змінюється.",
+  settingsBattery: "Батарея",
+  settingsBatteryHint: "Сон при 45 °C. Не змінюється.",
+  settingsBlind: "Немає даних",
+  settingsBlindHint: "Із закритою кришкою: сон через 90 с. Не змінюється.",
+  settingsCooldown: "Охолодження перед повтором",
+  settingsCooldownHint: "Батарея не вище 38 °C і тиск «Норма» весь цей час.",
+  settingsAfterTrip: "Після перегріву",
+  settingsAfterTripHint: "Режим кришки вмикається лише вручну.",
+  settingsFansNote: "Поріг кулерів",
+  settingsFansNoteHint: "Налаштовується за значком вентилятора на головній.",
+  settingsThermalReset: "Термозахист за замовчуванням",
+  settingsThermalResetAction: "Скинути",
   lidAlertTitle: "Режим кришки ввімкнено: Mac не засне. Натисни, щоб вимкнути",
   lidAlertLabel: (remaining) => `Кришка · ${remaining}`,
   lidAlertLabelNoTimer: "Кришка · без сну",

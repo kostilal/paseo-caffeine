@@ -7,6 +7,9 @@ import { join } from "node:path";
 import type { Battery } from "../shared/caffeine.shared.ts";
 import {
   GUARD_LABEL,
+  GUARD_PLIST,
+  HEAT_FILES,
+  armGuard,
   HEARTBEAT_FILE,
   type LidDeps,
   type LidStored,
@@ -123,6 +126,10 @@ function fakeMac(
   };
 }
 
+/** The guard's sh as launchd runs it: the plist's -c argument with the XML escapes undone. */
+const scriptOf = (plist: string) =>
+  (/<string>-c<\/string>\s*<string>([^<]*)<\/string>/.exec(plist)?.[1] ?? "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+
 const onBattery = (percent: number): Battery => ({ percent, charging: false, charged: false, external: false, minutes: null, adapterWatts: null, inputWatts: null, batteryWatts: null });
 const at = (ms: number) => new Date(ms).toISOString();
 
@@ -154,21 +161,27 @@ test("the guard is a LaunchAgent that runs at load, waits for the deadline, rest
   const plist = guardPlist(T0);
   assert.match(plist, new RegExp(`<string>${GUARD_LABEL.replace(/\./g, "\\.")}</string>`));
   assert.match(plist, /<key>RunAtLoad<\/key><true\/>/);
-  const script = /<string>-c<\/string>\s*<string>([^<]*)<\/string>/.exec(plist)?.[1] ?? "";
+  const script = scriptOf(plist);
   execFileSync("/bin/sh", ["-n", "-c", script]);
   assert.ok(script.includes(`${Math.ceil(T0 / 1000)} - `), "waits for the deadline");
   assert.ok(script.indexOf("disablesleep 0") < script.indexOf("rm -f"), "sleep first, then it removes itself");
   assert.ok(plist.endsWith("</plist>\n"));
+  assert.match(script, /do heat_tick; nap 15; done/, "it watches the heat while it waits");
+  assert.match(script, /^trap on_term TERM$/m, "a logout switches sleep back on");
+  assert.match(plist, /<key>KeepAlive<\/key><dict><key>SuccessfulExit<\/key><false\/><\/dict>/, "a guard that dies comes back, one that finished does not");
+  assert.match(plist, /<key>StandardOutPath<\/key><string>[^<]*caffeine-guard\.log<\/string>/);
 });
 
 test("the guard of lid mode with no end runs at load, waits for Caffeine to go quiet for ten minutes, restores sleep and removes itself", () => {
   const plist = heartbeatGuardPlist(HEARTBEAT_FILE, 10 * 60_000);
   assert.match(plist, new RegExp(`<string>${GUARD_LABEL.replace(/\./g, "\\.")}</string>`), "the same item as a timer's: one guard at a time");
   assert.match(plist, /<key>RunAtLoad<\/key><true\/>/);
-  const script = /<string>-c<\/string>\s*<string>([^<]*)<\/string>/.exec(plist)?.[1] ?? "";
+  const script = scriptOf(plist);
   execFileSync("/bin/sh", ["-n", "-c", script]);
   assert.ok(script.includes(HEARTBEAT_FILE), "it watches the heartbeat");
   assert.match(script, /-ge 600\b/, "ten minutes of quiet");
+  assert.match(script, /while :; do heat_tick; \/bin\/sleep 15 & wait \$!;/, "it watches the heat every 15 s while it waits");
+  assert.match(script, /^trap on_term TERM$/m);
   assert.ok(script.indexOf("disablesleep 0") < script.indexOf("rm -f"), "sleep first, then it removes itself");
   assert.ok(plist.endsWith("</plist>\n"));
 });
@@ -767,4 +780,36 @@ test("turning lid mode on with the lid already shut puts the display to sleep on
   await lid.enable("forever");
   await lid.checkClosed();
   assert.equal(mac.calls.filter((call) => call.endsWith("displaysleepnow")).length, 1);
+});
+
+test("arming a new guard waits for launchd to let go of the old one, keeps the handover file until it is done, and retries bootstrap once", async () => {
+  const calls: string[] = [];
+  let printsLeft = 3;
+  let bootstrapFails = 1;
+  const files = new Set<string>();
+  const ok = await armGuard("<plist/>", {
+    run: async (command, args) => {
+      calls.push(`${args[0]}${files.has(HEAT_FILES.handover) ? " (handover)" : ""}`);
+      if (args[0] === "print") return { code: printsLeft-- > 0 ? 0 : 113, stdout: "" };
+      if (args[0] === "bootstrap") return { code: bootstrapFails-- > 0 ? 5 : 0, stdout: "" };
+      return { code: 0, stdout: "" };
+    },
+    write: async (path) => void files.add(path),
+    remove: async (path) => void files.delete(path),
+    wait: async () => undefined,
+    domain: "gui/501",
+    log: () => undefined,
+  });
+  assert.equal(ok, true);
+  assert.deepEqual(calls, [
+    "bootout (handover)",
+    "print (handover)",
+    "print (handover)",
+    "print (handover)",
+    "print (handover)",
+    "bootstrap (handover)",
+    "bootstrap (handover)",
+  ]);
+  assert.equal(files.has(HEAT_FILES.handover), false, "gone once the new guard is in");
+  assert.ok(files.has(GUARD_PLIST));
 });

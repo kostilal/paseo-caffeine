@@ -5,19 +5,60 @@ import { z } from "zod";
  * Caffeine's preferences, kept by the host: Settings → Plugins → Caffeine → Settings.
  * `warmup` off takes Session warm-up's tile off the page and switches warm-up itself off, so
  * nothing unseen messages the accounts every morning.
+ *
+ * The rest is the heat guard of lid mode (server/thermal.ts says what each one means). The
+ * schema only checks shapes: which delays go with which pressure level, and how low the fan
+ * threshold may go on this machine, is the server's to settle (`normalizeThermal`), so a value
+ * written by an older client or by hand still lands on something safe. The battery limit is
+ * deliberately not here: it is fixed.
  */
 export const preferences = defineSettings({
   id: "preferences",
   scope: "host",
-  version: 1,
+  version: 2,
   schema: z.object({
     warmup: z.boolean().default(true),
+    /** The pressure level that puts a closed Mac in lid mode to sleep, after `thermalDelayS`. */
+    thermalPressure: z.enum(["heavy", "moderate"]).default("heavy"),
+    thermalDelayS: z.number().int().default(60),
+    /** How long the Mac has to stay cool before lid mode may be turned on again by hand. */
+    thermalCooldownMin: z.number().int().default(5),
+    /** The fans' trigger: any fan at this share of its own maximum, for `fanDelayS`. */
+    fanPct: z.number().int().default(85),
+    fanDelayS: z.number().int().default(60),
   }),
+  // Version 1 had the warm-up switch only; the new keys come in at their defaults.
+  migrate: (values) => values,
 });
+
+/**
+ * The heat guard's fixed numbers and the choices its settings offer, shared so the page, the
+ * Settings screen and the server agree (server/thermal.ts explains each).
+ */
+export const THERMAL_LIMITS = {
+  batteryLimitC: 45,
+  batteryWarmC: 40,
+  batteryCoolC: 38,
+  blindS: 90,
+  heavyDelaysS: [30, 60, 120],
+  moderateDelaysS: [120, 300, 600],
+  cooldownsMin: [5, 10, 20, 30],
+  fanDelaysS: [30, 60, 120, 300],
+  fanMaxPct: 95,
+  fanStepPct: 5,
+  fanDefaultPct: 85,
+} as const;
 
 export type Preferences = z.output<typeof preferences.schema>;
 
-export const defaultPreferences: Preferences = { warmup: true };
+export const defaultPreferences: Preferences = {
+  warmup: true,
+  thermalPressure: "heavy",
+  thermalDelayS: 60,
+  thermalCooldownMin: 5,
+  fanPct: 85,
+  fanDelayS: 60,
+};
 
 export const mode = z.enum(["off", "on", "timer", "auto"]);
 /** Minutes rather than hours: the shortest hold is half of one. */
@@ -89,6 +130,77 @@ export const warmupStatus = z.object({
   running: z.boolean().default(false),
 });
 
+/** One fan as the SMC reports it; `manual` when another app has taken the fan over. */
+export const fanReading = z.object({
+  rpm: z.number().nonnegative(),
+  min: z.number().nonnegative(),
+  max: z.number().nonnegative(),
+  manual: z.boolean().default(false),
+});
+
+/** Why the heat guard put the Mac to sleep (or, in a dry run, would have). */
+export const thermalReason = z.enum(["trapping", "pressure", "battery", "blind", "fans"]);
+
+/** One trip of the heat guard, as the latch file records it. */
+export const thermalEvent = z.object({
+  /** RFC 3339. */
+  at: z.string(),
+  reason: thermalReason,
+  /** The readings that tripped it, in words for the log and the banner. */
+  detail: z.string().default(""),
+  /** Nothing was done: the dry-run switch was on, or the readings were simulated. */
+  dryRun: z.boolean().default(false),
+  /** Whether the sleep was seen to happen; null while unknown. */
+  slept: z.boolean().nullable().default(null),
+  /** Other processes that held the Mac awake when sleep did not take. */
+  holders: z.array(z.string()).default([]),
+  /** "plugin" or "guard": whichever saw it first. */
+  by: z.string().default(""),
+});
+
+/** The heat guard's settings as the server applies them, after normalising. */
+export const thermalSettings = z.object({
+  pressure: z.enum(["heavy", "moderate"]).default("heavy"),
+  delayS: z.number().int().default(60),
+  cooldownMin: z.number().int().default(5),
+  fanPct: z.number().int().default(85),
+  fanDelayS: z.number().int().default(60),
+  /** The lowest fan threshold this machine allows: a little above its fans' floor. */
+  fanMinPct: z.number().int().default(40),
+});
+
+/**
+ * The heat block and what the guard is doing. Readings are null when they cannot be had,
+ * `fans` is [] on a Mac without fans. `armed` is lid mode: the guard acts only then, since
+ * that is when Caffeine has switched off macOS's own way out.
+ */
+export const thermalStatus = z.object({
+  /** macOS's thermal pressure: 0 nominal, 1 moderate, 2 heavy, 3 trapping, 4 sleeping. */
+  pressure: z.number().int().min(0).max(4).nullable().default(null),
+  batteryC: z.number().nullable().default(null),
+  /** The hottest of the die sensors, only when enough of them read sensibly. */
+  cpuC: z.number().nullable().default(null),
+  fans: z.array(fanReading).nullable().default(null),
+  /** Why CPU and fans are missing: "" when the sensor helper runs, else a short reason. */
+  sensors: z.string().default(""),
+  lidClosed: z.boolean().nullable().default(null),
+  armed: z.boolean().default(false),
+  dryRun: z.boolean().default(false),
+  simulated: z.boolean().default(false),
+  state: z.enum(["normal", "warm", "pending", "blind", "latched"]).default("normal"),
+  /** While pending: which trigger, and when it fires (RFC 3339). */
+  pendingReason: z.string().default(""),
+  firesAt: z.string().default(""),
+  /** The trip that is keeping lid mode off until the Mac has cooled down. */
+  latch: thermalEvent.nullable().default(null),
+  /** Whether the cool-down is done, and when it will be (RFC 3339, "" when unknown). */
+  cool: z.boolean().default(false),
+  coolAt: z.string().default(""),
+  /** The last trip, for the banner, until somebody dismisses it. */
+  event: thermalEvent.nullable().default(null),
+  settings: thermalSettings.default({ pressure: "heavy", delayS: 60, cooldownMin: 5, fanPct: 85, fanDelayS: 60, fanMinPct: 40 }),
+});
+
 /** What every client sees. `until` and `tickAt` are RFC 3339 or empty. */
 export const status = z.object({
   mode,
@@ -112,6 +224,7 @@ export const status = z.object({
   battery: battery.nullable().default(null),
   lid: lidStatus.default({ on: false, until: "", minutes: 0, forever: false, ended: "", stopped: "", setup: "unknown", error: "" }),
   warmup: warmupStatus.default({ enabled: false, time: "06:00", nextAt: "", lastAt: "", results: [], running: false }),
+  thermal: thermalStatus.prefault({}),
 });
 
 export const setInput = z.discriminatedUnion("mode", [
@@ -137,6 +250,18 @@ export type LidStopped = "sleep" | "off" | "manual";
 export type LidSetup = z.output<typeof lidSetup>;
 export type LidStatus = z.output<typeof lidStatus>;
 export type WarmupStatus = z.output<typeof warmupStatus>;
+export type FanReading = z.output<typeof fanReading>;
+export type ThermalReason = z.output<typeof thermalReason>;
+export type ThermalEvent = z.output<typeof thermalEvent>;
+export type ThermalSettings = z.output<typeof thermalSettings>;
+export type ThermalStatus = z.output<typeof thermalStatus>;
+
+/** Puts the heat guard's last trip away: the banner goes, the latch (if any) stays. */
+export const dismissThermal = defineRpc({
+  name: "caffeine.thermal-dismiss",
+  input: z.object({}),
+  output: status,
+});
 
 export const getStatus = defineRpc({
   name: "caffeine.get",

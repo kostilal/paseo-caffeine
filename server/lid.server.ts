@@ -71,6 +71,27 @@ export function setupScript(rule: string): string {
 /** A path as one single-quoted sh word. */
 const shellWord = (path: string) => `'${path.replace(/'/g, "'\\''")}'`;
 
+/** The files the plugin and the LaunchAgent guard share for the heat guard (see thermal.ts). */
+export const HEAT_FILES = {
+  /** The settings, as `KEY=number` lines the guard can read without running anything. */
+  conf: join(homedir(), ".jobby-jobs", "caffeine-thermal.conf"),
+  /** A trip: lid mode stays off until the Mac has cooled down. */
+  latch: join(homedir(), ".jobby-jobs", "caffeine-thermal-latch"),
+  /** Taken by whichever of the two is putting the Mac to sleep. */
+  lock: join(homedir(), ".jobby-jobs", "caffeine-thermal.lock"),
+  /** While this file exists, the heat guard only says what it would have done. */
+  dryRun: join(homedir(), ".jobby-jobs", "caffeine-thermal-dryrun"),
+  /** "<caffeinate pid> <plugin pid>": how the guard knows Caffeine's own caffeinate. */
+  keeperPid: join(homedir(), ".jobby-jobs", "caffeine-keeper.pid"),
+  /** Written just before the plugin replaces the guard, so the old one leaves sleep alone. */
+  handover: join(homedir(), ".jobby-jobs", "caffeine-guard-handover"),
+  log: join(homedir(), ".jobby-jobs", "caffeine-guard.log"),
+};
+export type HeatFilePaths = typeof HEAT_FILES;
+
+/** How often the guard looks at the heat, and at its deadline or Caffeine's heartbeat. */
+export const GUARD_EVERY_S = 15;
+
 /**
  * How every guard ends: sleep back on, then it removes itself. Up to half an hour of attempts,
  * a minute apart; it removes itself only once `pmset -g` shows sleep is back, or when it has
@@ -79,14 +100,162 @@ const shellWord = (path: string) => `'${path.replace(/'/g, "'\\''")}'`;
 function restoreAndLeave(): string[] {
   return [
     "i=0",
-    `while [ "$i" -lt 30 ]; do ${SUDO} -n ${PMSET} ${OFF.join(" ")}; if ${PMSET} -g | /usr/bin/grep -q 'SleepDisabled[[:space:]]*0'; then break; fi; i=$((i + 1)); /bin/sleep 60; done`,
+    `while [ "$i" -lt 30 ]; do $SUDO -n $PMSET ${OFF.join(" ")}; if $PMSET -g | /usr/bin/grep -q 'SleepDisabled[[:space:]]*0'; then break; fi; i=$((i + 1)); /bin/sleep 60; done`,
     `/bin/rm -f ${shellWord(GUARD_PLIST)}`,
     `/bin/launchctl bootout gui/$(/usr/bin/id -u)/${GUARD_LABEL}`,
   ];
 }
 
+/**
+ * The heat guard in sh: the rules of server/thermal.ts, read from the same settings file,
+ * acting through the same sequence as server/emergency.server.ts, so lid mode stays covered
+ * with Paseo, the plugin, the relay and the network all gone. Pressure and the battery come
+ * from notifyutil and ioreg, which every Mac has; the fans only when the plugin has built the
+ * sensor helper. Every command can be swapped through a CAFFEINE_* variable, for the tests
+ * only: launchd starts the guard with none of them set.
+ *
+ * It also catches TERM: launchd sends it at logout, when a LaunchAgent ends and nothing would
+ * switch sleep back on, so it does that first — unless the plugin has just written the
+ * handover file, which means a new guard is taking over and lid mode goes on.
+ */
+export function heatShell(files: HeatFilePaths = HEAT_FILES): string {
+  const word = shellWord;
+  return [
+    "PMSET=${CAFFEINE_PMSET:-/usr/bin/pmset}",
+    "SUDO=${CAFFEINE_SUDO:-/usr/bin/sudo}",
+    "NOTIFYUTIL=${CAFFEINE_NOTIFYUTIL:-/usr/bin/notifyutil}",
+    "IOREG=${CAFFEINE_IOREG:-/usr/sbin/ioreg}",
+    "PS=${CAFFEINE_PS:-/bin/ps}",
+    "CLOCK=${CAFFEINE_CLOCK:-}",
+    "VERIFY_S=${CAFFEINE_VERIFY_S:-20}",
+    "SETTLE_S=${CAFFEINE_SETTLE_S:-2}",
+    `CONF=${word(files.conf)}; LATCH=${word(files.latch)}; LOCK=${word(files.lock)}; DRY=${word(files.dryRun)}; KEEPER=${word(files.keeperPid)}; HANDOVER=${word(files.handover)}`,
+    "PL=2; PD=60; FP=85; FD=60; HELPER=; S1=; S2=; BH=0; BS=; FS=; LR=0",
+    'now() { if [ -n "$CLOCK" ]; then $CLOCK; else /bin/date +%s; fi; }',
+    "log() { echo \"$(/bin/date '+%Y-%m-%d %H:%M:%S') caffeine guard: $*\"; }",
+    "num() { case \"$1\" in ''|*[!0-9]*) return 1;; esac; return 0; }",
+    "nap() { /bin/sleep \"$1\" & wait $!; }",
+    "read_conf() {",
+    "  PL=2; PD=60; FP=85; FD=60; HELPER=",
+    '  [ -f "$CONF" ] || return 0',
+    "  while IFS='=' read -r key value; do",
+    '    case "$key" in',
+    '      PRESSURE_LEVEL) case "$value" in 1|2) PL=$value;; esac;;',
+    '      PRESSURE_DELAY) if num "$value" && [ "$value" -ge 30 ] && [ "$value" -le 600 ]; then PD=$value; fi;;',
+    '      FAN_PCT) if num "$value" && [ "$value" -ge 5 ] && [ "$value" -le 95 ]; then FP=$value; fi;;',
+    '      FAN_DELAY) if num "$value" && [ "$value" -ge 30 ] && [ "$value" -le 300 ]; then FD=$value; fi;;',
+    '      HELPER) case "$value" in /*) HELPER=$value;; esac;;',
+    "    esac",
+    '  done < "$CONF"',
+    "}",
+    "pressure() { p=$($NOTIFYUTIL -g com.apple.system.thermalpressurelevel 2>/dev/null | /usr/bin/awk '{print $NF}'); case \"$p\" in 0|1|2|3|4) echo \"$p\";; esac; }",
+    "battery() { t=$($IOREG -rn AppleSmartBattery 2>/dev/null | /usr/bin/awk '/^[ \\t]*\"Temperature\" = [0-9]+[ \\t]*$/ {print $NF; exit}'); if num \"$t\"; then echo \"$t\"; fi; }",
+    "lid_closed() { $IOREG -r -k AppleClamshellState -d 4 2>/dev/null | /usr/bin/grep -q '\"AppleClamshellState\" = Yes'; }",
+    'fans_pct() { if [ -n "$HELPER" ] && [ -f "$HELPER" ] && [ -x "$HELPER" ]; then f=$("$HELPER" --fans-pct 2>/dev/null); if num "$f"; then echo "$f"; fi; fi; }',
+    "holders() { $PMSET -g assertions 2>/dev/null | /usr/bin/awk '/PreventSystemSleep named:/ { sub(/^[ \\t]*pid [0-9]+\\(/, \"\"); sub(/\\).*/, \"\"); print }' | /usr/bin/sort -u | /usr/bin/tr '\\n' ' '; }",
+    "allow_sleep() {",
+    "  i=0",
+    '  while [ "$i" -lt 3 ]; do',
+    `    $SUDO -n $PMSET ${OFF.join(" ")} >/dev/null 2>&1`,
+    "    if ! $PMSET -g 2>/dev/null | /usr/bin/grep -q 'SleepDisabled[[:space:]]*1'; then return 0; fi",
+    '    i=$((i + 1)); nap "$SETTLE_S"',
+    "  done",
+    "  return 1",
+    "}",
+    // Only Caffeine's own: the pid it wrote, still a caffeinate tied to the plugin's pid.
+    "stop_own_caffeinate() {",
+    '  [ -f "$KEEPER" ] || return 0',
+    '  read -r cpid ppid < "$KEEPER" || return 0',
+    '  if ! num "$cpid" || ! num "$ppid"; then return 0; fi',
+    '  args=$($PS -o args= -p "$cpid" 2>/dev/null)',
+    '  case "$args" in *caffeinate*"-w $ppid"*) ;; *) return 0;; esac',
+    '  kill -TERM "$cpid" 2>/dev/null; nap "$SETTLE_S"',
+    '  if kill -0 "$cpid" 2>/dev/null; then kill -KILL "$cpid" 2>/dev/null; fi',
+    '  log "stopped Caffeine\'s caffeinate ($cpid)"',
+    "}",
+    "emergency() {",
+    '  reason=$1; detail=$2',
+    '  if [ -e "$DRY" ]; then',
+    '    [ -f "$LATCH" ] || printf \'at=%s\\nreason=%s\\ndetail=%s\\ndry=1\\nby=guard\\n\' "$(now)" "$reason" "$detail" > "$LATCH"',
+    '    log "dry run: would put the Mac to sleep ($reason: $detail)"',
+    "    return 0",
+    "  fi",
+    // A lock older than five minutes was left by a crash (the plugin's rule too): taken over.
+    '  if ! /bin/mkdir "$LOCK" 2>/dev/null; then',
+    '    held=$(( $(/bin/date +%s) - $(/usr/bin/stat -f %m "$LOCK" 2>/dev/null || /bin/date +%s) ))',
+    '    if [ "$held" -lt 300 ]; then log "$reason seen; the plugin is already on it"; return 0; fi',
+    '    /bin/rmdir "$LOCK" 2>/dev/null',
+    '    if ! /bin/mkdir "$LOCK" 2>/dev/null; then log "$reason seen; the lock is taken"; return 0; fi',
+    '    log "took over a lock left $held s ago"',
+    "  fi",
+    '  printf \'at=%s\\nreason=%s\\ndetail=%s\\ndry=0\\nby=guard\\n\' "$(now)" "$reason" "$detail" > "$LATCH"',
+    '  log "putting the Mac to sleep ($reason: $detail)"',
+    "  try=1; slept=0",
+    '  while [ "$try" -le 3 ]; do',
+    '    allow_sleep || log "sleep could not be switched back on (SleepDisabled is still 1)"',
+    "    stop_own_caffeinate",
+    "    t0=$(now)",
+    "    $PMSET sleepnow >/dev/null 2>&1",
+    '    nap "$VERIFY_S"',
+    "    t1=$(now)",
+    // A process does not run while the Mac sleeps: the wall clock running ahead is the sleep.
+    '    if [ $((t1 - t0 - VERIFY_S)) -ge 15 ]; then slept=1; break; fi',
+    "    try=$((try + 1))",
+    "  done",
+    '  echo "slept=$slept" >> "$LATCH"',
+    '  if [ "$slept" = 1 ]; then log "the Mac slept"; else h=$(holders); echo "holders=$h" >> "$LATCH"; log "sleep did not take; held by: $h"; fi',
+    '  /bin/rmdir "$LOCK" 2>/dev/null',
+    "  return 0",
+    "}",
+    // While a real latch holds: sleep stays allowed, and a Mac woken with the lid closed goes
+    // back down, at most once a minute.
+    "latch_duty() {",
+    '  [ -e "$DRY" ] && return 0',
+    "  /usr/bin/grep -q '^dry=1' \"$LATCH\" && return 0",
+    "  if $PMSET -g 2>/dev/null | /usr/bin/grep -q 'SleepDisabled[[:space:]]*1'; then allow_sleep; fi",
+    "  lid_closed || return 0",
+    "  t_now=$(now)",
+    '  [ $((t_now - LR)) -ge 60 ] || return 0',
+    "  LR=$t_now",
+    "  stop_own_caffeinate",
+    '  log "latched with the lid closed: back to sleep"',
+    "  $PMSET sleepnow >/dev/null 2>&1",
+    "}",
+    "heat_tick() {",
+    '  if [ -f "$LATCH" ]; then latch_duty; return 0; fi',
+    "  read_conf",
+    "  t_now=$(now); p=$(pressure); b=$(battery); closed=0",
+    "  if lid_closed; then closed=1; fi",
+    '  if [ -n "$p" ] && [ "$p" -ge 3 ]; then emergency trapping "Trapping"; return 0; fi',
+    '  if [ -n "$p" ]; then',
+    '    if [ "$p" -ge 1 ]; then [ -n "$S1" ] || S1=$t_now; else S1=; fi',
+    '    if [ "$p" -ge 2 ]; then [ -n "$S2" ] || S2=$t_now; else S2=; fi',
+    "  fi",
+    '  HD=$PD; if [ "$PL" = 1 ] && [ "$HD" -gt 60 ]; then HD=60; fi',
+    '  if [ -n "$S2" ] && [ $((t_now - S2)) -ge "$HD" ]; then emergency pressure "Heavy $HD s"; return 0; fi',
+    '  if [ "$PL" = 1 ] && [ -n "$S1" ] && [ $((t_now - S1)) -ge "$PD" ]; then emergency pressure "Moderate $PD s"; return 0; fi',
+    '  if [ -n "$b" ]; then if [ "$b" -ge 4500 ]; then BH=$((BH + 1)); else BH=0; fi; fi',
+    '  if [ "$BH" -ge 2 ]; then emergency battery "$((b / 100)).$(((b % 100) / 10)) °C"; return 0; fi',
+    '  if [ "$closed" = 1 ] && [ -z "$p" ] && [ -z "$b" ]; then [ -n "$BS" ] || BS=$t_now; else BS=; fi',
+    '  if [ -n "$BS" ] && [ $((t_now - BS)) -ge 90 ]; then emergency blind "90 s"; return 0; fi',
+    "  f=; if [ \"$closed\" = 1 ]; then f=$(fans_pct); fi",
+    '  if [ -z "$f" ]; then FS=; elif [ "$f" -ge "$FP" ]; then [ -n "$FS" ] || FS=$t_now; elif [ "$f" -lt $((FP - 10)) ]; then FS=; fi',
+    '  if [ -n "$FS" ] && [ $((t_now - FS)) -ge "$FD" ]; then emergency fans "$f % $FD s"; return 0; fi',
+    "  return 0",
+    "}",
+    "on_term() {",
+    '  if [ -f "$HANDOVER" ]; then age=$(( $(/bin/date +%s) - $(/usr/bin/stat -f %m "$HANDOVER" 2>/dev/null || echo 0) )); if [ "$age" -lt 60 ]; then log "a new guard takes over"; exit 0; fi; fi',
+    '  log "stopping: sleep back on first"',
+    `  $SUDO -n $PMSET ${OFF.join(" ")} >/dev/null 2>&1`,
+    "  exit 0",
+    "}",
+    "trap on_term TERM",
+  ].join("\n");
+}
+
 /** A guard's script as a LaunchAgent. RunAtLoad makes launchd start it again at the next
- *  login after a reboot. One label for every guard: there is one lid mode at a time. */
+ *  login after a reboot; KeepAlive brings back a guard that died, but not one that finished.
+ *  One label for every guard: there is one lid mode at a time. */
 function agentPlist(script: string): string {
   const escape = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   return [
@@ -97,40 +266,49 @@ function agentPlist(script: string): string {
     "<key>ProgramArguments</key><array><string>/bin/sh</string><string>-c</string>",
     `<string>${escape(script)}</string></array>`,
     "<key>RunAtLoad</key><true/>",
+    "<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>",
+    `<key>StandardOutPath</key><string>${escape(HEAT_FILES.log)}</string>`,
+    `<key>StandardErrorPath</key><string>${escape(HEAT_FILES.log)}</string>`,
     "</dict></plist>",
     "",
   ].join("\n");
 }
 
 /**
- * The guard of a timer: a LaunchAgent that waits for the deadline, restores sleep and removes
- * itself. After a reboot the wait is whatever is left (or none).
+ * The guard of a timer: a LaunchAgent that watches the heat until the deadline, then restores
+ * sleep and removes itself. After a reboot the wait is whatever is left (or none).
  */
-export function guardPlist(untilMs: number): string {
+export function guardPlist(untilMs: number, files: HeatFilePaths = HEAT_FILES): string {
   const at = Math.ceil(untilMs / 1000);
   return agentPlist(
-    [`left=$((${at} - $(/bin/date +%s)))`, 'if [ "$left" -gt 0 ]; then /bin/sleep "$left"; fi', ...restoreAndLeave()].join("; "),
+    [
+      heatShell(files),
+      `while [ $((${at} - $(/bin/date +%s))) -gt 0 ]; do heat_tick; nap ${GUARD_EVERY_S}; done`,
+      ...restoreAndLeave(),
+    ].join("\n"),
   );
 }
 
 /**
- * The wait of the guard of lid mode with no end: every `everyS` seconds it looks at when
- * Caffeine last beat (the heartbeat file's time), and stops waiting once that is `staleS`
- * seconds ago. Never counted from before the guard's own start, so after a reboot Paseo gets
- * the same time from login to pick lid mode up again.
+ * The wait of the guard of lid mode with no end: every `everyS` seconds it runs `onTick` (the
+ * heat check) and looks at when Caffeine last beat (the heartbeat file's time), and stops
+ * waiting once that is `staleS` seconds ago. Never counted from before the guard's own start,
+ * so after a reboot Paseo gets the same time from login to pick lid mode up again.
  */
-export function heartbeatWait(heartbeat: string, staleS: number, everyS = 60): string {
+export function heartbeatWait(heartbeat: string, staleS: number, everyS = 60, onTick = ""): string {
   const file = shellWord(heartbeat);
   return [
     "started=$(/bin/date +%s)",
-    `while :; do /bin/sleep ${everyS}; last=$started; if [ -f ${file} ]; then beat=$(/usr/bin/stat -f %m ${file}); if [ "$beat" -gt "$last" ]; then last=$beat; fi; fi; if [ $(($(/bin/date +%s) - $last)) -ge ${staleS} ]; then break; fi; done`,
+    `while :; do ${onTick ? `${onTick}; ` : ""}/bin/sleep ${everyS} & wait $!; last=$started; if [ -f ${file} ]; then beat=$(/usr/bin/stat -f %m ${file}); if [ "$beat" -gt "$last" ]; then last=$beat; fi; fi; if [ $(($(/bin/date +%s) - $last)) -ge ${staleS} ]; then break; fi; done`,
   ].join("; ");
 }
 
-/** The guard of lid mode with no end: it waits for Caffeine to go quiet (see heartbeatWait),
- *  then restores sleep and removes itself. */
-export function heartbeatGuardPlist(heartbeat: string, staleMs: number): string {
-  return agentPlist([heartbeatWait(heartbeat, Math.ceil(staleMs / 1000)), ...restoreAndLeave()].join("; "));
+/** The guard of lid mode with no end: it watches the heat and waits for Caffeine to go quiet
+ *  (see heartbeatWait), then restores sleep and removes itself. */
+export function heartbeatGuardPlist(heartbeat: string, staleMs: number, files: HeatFilePaths = HEAT_FILES): string {
+  return agentPlist(
+    [heatShell(files), heartbeatWait(heartbeat, Math.ceil(staleMs / 1000), GUARD_EVERY_S, "heat_tick"), ...restoreAndLeave()].join("\n"),
+  );
 }
 
 /** `SleepDisabled 1` in `pmset -g`; null when the line is not there. */
@@ -236,6 +414,12 @@ export interface LidDeps {
   read(): Promise<LidStored>;
   write(value: LidStored): Promise<void>;
   user(): string;
+  /** The heat guard's say before lid mode comes on: "cooling" while a trip has not cooled
+   *  down (see heat.server.ts). Absent: always allowed. */
+  gate?(): Promise<"ok" | "cooling">;
+  /** Whether the heat guard has tripped: sleep switched back on under a trip reads as heat,
+   *  not as somebody's hand. */
+  latched?(): boolean;
   now?: () => number;
   log?: (line: string) => void;
 }
@@ -249,6 +433,8 @@ export interface Lid {
   enable(minutes: number | "forever", untilMs?: number): Promise<void>;
   /** `by` says who turned it off, for the tile: "sleep" (Sleep now) or "off" (the header). */
   disable(why: string, by?: LidStopped): Promise<void>;
+  /** Lid mode off for the heat guard; true once `pmset -g` confirms sleep is back. */
+  endForHeat(): Promise<boolean>;
   setup(): Promise<void>;
   /** Keeps the display asleep while the lid is closed and lid mode is on, checked once a
    *  minute; never while an external monitor is attached. */
@@ -413,11 +599,12 @@ export function createLid(deps: LidDeps): Lid {
           if (!running()) because({ ended: "heat" });
           return;
         }
-        // Turned back on by hand (`pmset -a disablesleep 0`): nothing left to time.
+        // Turned back on by hand (`pmset -a disablesleep 0`), or by the heat guard's sh half:
+        // nothing left to time.
         if (on === false) {
           await deps.stopGuard().catch(() => undefined);
           await save(OFF_STATE);
-          because({ stopped: "manual" });
+          because(deps.latched?.() ? { ended: "heat" } : { stopped: "manual" });
         }
       }),
 
@@ -426,6 +613,13 @@ export function createLid(deps: LidDeps): Lid {
         // A new attempt: whatever turned lid mode off before is no longer the news, even if
         // this one fails (its failure is shown on its own).
         because({});
+        // A trip that has not cooled down keeps lid mode off, whoever asks: the heat guard
+        // let the Mac sleep for a reason.
+        if (deps.gate && (await deps.gate()) === "cooling") {
+          error = "cooling";
+          because({ ended: "heat" });
+          return;
+        }
         await readPermission();
         if (setup !== "ready") {
           error = "needs-setup";
@@ -490,6 +684,13 @@ export function createLid(deps: LidDeps): Lid {
         if (on === false) because(by ? { stopped: by } : {});
       }),
 
+    endForHeat: () =>
+      serial(async () => {
+        await restore("heat guard");
+        if (on === false) because({ ended: "heat" });
+        return on === false;
+      }),
+
     // Outside the queue on purpose: the password dialog waits for a person, possibly minutes,
     // and the ticks behind it (which the whole controller waits on) must not. It only touches
     // `setup` and `error`.
@@ -548,22 +749,63 @@ function runCommand(command: string, args: readonly string[]): Promise<{ code: n
 }
 
 /** The real thing: execFile, osascript, a detached sh, and `ps` to recognise our own guard. */
-export function systemLidDeps(log: (line: string) => void): LidDeps {
-  /** Loads `plist` as the guard, booting out any earlier one first; false if launchd refused it. */
-  async function arm(plist: string): Promise<boolean> {
-    try {
-      const domain = `gui/${process.getuid?.() ?? userInfo().uid}`;
-      await runCommand("/bin/launchctl", ["bootout", `${domain}/${GUARD_LABEL}`]);
-      await mkdir(dirname(GUARD_PLIST), { recursive: true });
-      await writeFile(GUARD_PLIST, plist, { mode: 0o644 });
-      const loaded = await runCommand("/bin/launchctl", ["bootstrap", domain, GUARD_PLIST]);
-      if (loaded.code !== 0) log(`caffeine: lid guard did not load (exit ${loaded.code})`);
-      return loaded.code === 0;
-    } catch (failure) {
-      log(`caffeine: lid guard failed: ${String(failure)}`);
-      return false;
+/** What arming the guard needs from the system; a parameter so the order can be tested. */
+export interface ArmIo {
+  run(command: string, args: readonly string[]): Promise<{ code: number; stdout: string }>;
+  write(path: string, text: string): Promise<void>;
+  remove(path: string): Promise<void>;
+  wait(ms: number): Promise<void>;
+  domain: string;
+  log(line: string): void;
+}
+
+/**
+ * Loads `plist` as the guard, replacing any earlier one; false if launchd refused it. The
+ * order matters. The old guard switches sleep back on when it is stopped (it cannot tell a
+ * logout from a replacement), unless the handover file says a new one is taking over; and
+ * `launchctl bootout` returns before that guard has finished handling its TERM. So: the
+ * handover file first, then bootout, then wait until launchd has let go of the old job —
+ * bootstrapping before that fails with 5 (I/O error) — then bootstrap, with one retry, and only
+ * then the handover file goes.
+ */
+export async function armGuard(plist: string, io: ArmIo): Promise<boolean> {
+  const service = `${io.domain}/${GUARD_LABEL}`;
+  try {
+    await io.write(HEAT_FILES.handover, `${Date.now()}\n`);
+    await io.run("/bin/launchctl", ["bootout", service]);
+    for (let i = 0; i < 50; i += 1) {
+      if ((await io.run("/bin/launchctl", ["print", service])).code !== 0) break;
+      await io.wait(100);
     }
+    await io.write(GUARD_PLIST, plist);
+    let loaded = await io.run("/bin/launchctl", ["bootstrap", io.domain, GUARD_PLIST]);
+    if (loaded.code !== 0) {
+      await io.wait(1000);
+      loaded = await io.run("/bin/launchctl", ["bootstrap", io.domain, GUARD_PLIST]);
+    }
+    if (loaded.code !== 0) io.log(`caffeine: lid guard did not load (exit ${loaded.code})`);
+    return loaded.code === 0;
+  } catch (failure) {
+    io.log(`caffeine: lid guard failed: ${String(failure)}`);
+    return false;
+  } finally {
+    await io.remove(HEAT_FILES.handover).catch(() => undefined);
   }
+}
+
+export function systemLidDeps(log: (line: string) => void): LidDeps {
+  const arm = (plist: string) =>
+    armGuard(plist, {
+      run: runCommand,
+      write: async (path, text) => {
+        await mkdir(dirname(path), { recursive: true });
+        await writeFile(path, text, { mode: 0o644 });
+      },
+      remove: (path) => rm(path, { force: true }),
+      wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      domain: `gui/${process.getuid?.() ?? userInfo().uid}`,
+      log,
+    });
 
   return {
     run: runCommand,
