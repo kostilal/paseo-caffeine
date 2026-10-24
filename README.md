@@ -3,6 +3,13 @@
 A switch for the Mac's sleep, inside [Paseo](https://getpaseo.com): on the desktop,
 on the phone, and per host when several are connected.
 
+> **Developers and agents: read [Definition of Done](#definition-of-done-chatgpt-sees-it-too)
+> before you finish anything.** Caffeine is driven from ChatGPT through God Mode as well as from
+> the page, and ChatGPT can use only what `meta.describe` declares. Every new feature, status
+> field, metric or UI action needs its describe entry in `server/capabilities.server.ts` (or a
+> stated reason it has none), with its risk, confirmation, honest answer and tests. A change
+> without them is not done.
+
 Agents keep working after you walk away; a MacBook on battery does not. Until now the
 machine stayed awake only because Orca ran `caffeinate` underneath itself. This plugin
 gives Paseo the same lever with three positions:
@@ -42,7 +49,8 @@ there, lid mode refuses to start, since nothing would bring sleep back. Caffeine
 go of the deadline once `pmset -g` confirms sleep is back, so a failed attempt is retried.
 Under **On** lid mode has no end, so its guard waits for Caffeine rather than a deadline: it
 lasts until you turn it off (another mode, the switch, the header, or Sleep now), the battery
-drops below 20% off the charger, macOS reports the Mac running hot (`pmset -g therm`), or
+drops below 20% off the charger, macOS reports the Mac running hot (`pmset -g therm`, which
+never happens on Apple Silicon; the heat guard below covers that), or
 Caffeine goes quiet for ten minutes (Paseo quit or crashed, the plugin disabled or failing to
 load), when the guard puts sleep back. Caffeine beats every thirty seconds, into
 `~/.jobby-jobs/caffeine-lid-heartbeat`; after a reboot the ten minutes count from login, so a
@@ -155,7 +163,9 @@ end it.
 ## Sleeping, and getting back
 
 **Sleep now** kills the `caffeinate` child and then runs `pmset sleepnow`, a second
-later. Both halves of that are load-bearing.
+later. Both halves of that are load-bearing. With lid mode on it first switches sleep back on,
+since `sleepnow` does nothing while sleep is switched off system-wide. If that fails, it asks
+for nothing and the answer says why.
 
 The hold has to go first. `caffeinate -s` outranks `pmset sleepnow`: under a live hold
 the Mac drops to DarkWake and stays there, awake in every way that costs power, until the
@@ -226,8 +236,10 @@ to arrange: **Wake for network access** on in Energy Saver, the Mac **on the cha
 settles it after the fact — a wake `due to … wifibt` came from the network, one `due to
 … HID Activity` came from somebody touching the trackpad.
 
-A header button would have been an obvious third place for all this and is not available —
-`PluginHeaderButtonContribution` needs a `workspaceId`, and this surface is global.
+The header has one button of this plugin's, the lid alert (`client/lid-alert.tsx`). A header
+button belongs to one workspace (`PluginHeaderButtonContribution` needs a `workspaceId`), so the
+alert is added to every workspace there is. The wake link and Sleep now stay on the page, which
+is global.
 
 The battery comes from `pmset -g batt`, parsed rather than computed — `0:00 remaining`
 next to `charged` means "not applicable", and `(no estimate)` means pmset is still
@@ -248,16 +260,113 @@ last answer stands for the same three minutes an idle answer would.
 ## From ChatGPT, through God Mode
 
 `meta.describe` tells an assistant outside Paseo what this plugin can do, because Paseo
-itself hands a remote client nothing but a blind RPC call. It answers with seven operations
-in the `paseo.capabilities/1` shape: the status, and the actions behind the tiles. Each one
-names the real RPC, the arguments a caller supplies as JSON Schema, and `fixed` arguments
-the caller cannot change. "Keep awake" and "let it sleep" are both `caffeine.set`, with the
-mode fixed. Letting the Mac sleep and sleeping now are marked `disruptive` and are
-confirmed with the user first: an asleep Mac pauses its agents and cannot be reached.
+itself hands a remote client nothing but a blind RPC call. It answers in the
+`paseo.capabilities/1` shape (`server/capabilities.server.ts`) with everything the page shows
+and every change it offers that may be made from afar. Each operation names the real RPC, the
+arguments a caller supplies as JSON Schema, the `fixed` arguments the caller cannot change, and
+the fields of the answer to read out. "Keep awake" and "let it sleep" are both `caffeine.set`,
+with the mode fixed. The schemas are rendered from the same zod contracts the handlers parse
+with, so an operation cannot promise an argument its handler would refuse.
 
-The schemas are rendered from the same zod contracts the handlers parse with
-(`server/capabilities.server.ts`), and the tests prove each operation's arguments,
-merged under its fixed ones, pass the handler's own contract.
+| Read | What it answers with |
+|---|---|
+| `status` (the default) | the mode and its deadline, whether the Mac is held, agents, the display and lid switches, lid mode itself (on, its end, why it ended or who stopped it, the permission), the battery with the charger's watts, the wake link, when it was read |
+| `heat` | thermal pressure, the CPU and battery temperatures, each fan's rpm, minimum and maximum and whether another app drives it, the lid, and the heat guard: armed, its state, what fires when, the latch and cool-down, the last trip, its thresholds, dry run and simulation |
+| `warmup` | Session warm-up: on or off, the hour, the next and last run, one result per login |
+| `everything` | all three in one answer |
+
+| Action | Risk | What it is on the page |
+|---|---|---|
+| `keep_awake`, `keep_awake_for` (30 min … 12 h) | low | On and the timer; lid mode comes with them when the lid switch is on |
+| `auto` | disruptive, asks first | While agents work: the Mac may idle to sleep, and with lid mode on and the lid closed it sleeps at once |
+| `allow_sleep` | disruptive, asks first | Off |
+| `keep_display` | low | Keep display on |
+| `allow_lid_closed` | low | the lid switch on; refused without the one-time permission |
+| `stop_lid_closed` | disruptive, asks first | the lid switch off: a closed Mac sleeps at once |
+| `lid_back_on` | low | Turn back on, once Sleep now, the header, the battery, heat or a hand ended lid mode |
+| `lid_off_now` | disruptive, asks first | the header's alert: sleep back on now, the switch kept |
+| `sleep_now` | disruptive, asks first | Sleep now |
+| `dismiss_heat_alert` | low | OK on the heat banner |
+| `warmup_on` (an hour may come with it) | outward, asks first | Session warm-up on; refused while Settings hides it |
+| `warmup_hour` | outward, asks first | − and + on the warm-up tile: the hour moves, on or off stays |
+| `warmup_off` | low | Session warm-up off |
+| `warmup_now` | outward, asks first | Warm up now; answers at once, and the results come with `warmup` |
+
+**Answers say what happened.** Every change answers with the status after it and two fields
+about that one call (`server/actions.server.ts`). `refused` says why nothing was changed, and
+God Mode reports it as not done (`outcome`). `problem` says what did not take although the
+change was made. Both are read from the system after the change (lid mode from `pmset -g`, the
+hold from the caffeinate child), never from what was asked. So the lid switch without the
+permission is refused, and On with lid mode that did not come says a closed lid will still sleep
+the Mac. Sleep now with sleep still switched off system-wide asks for nothing and says why. Its
+answer comes a second before the sleep, so it confirms the request, not the sleep. Warm up now
+answers before the warm-up is done, since a plugin RPC times out at 30 s and a warm-up takes
+seconds per login.
+
+**Kept back, on purpose** (`NOT_FOR_ASSISTANTS`, each with its reason in the code):
+
+- `caffeine.lid-setup`, the administrator password dialog and the sudoers rule. It needs a person
+  at the Mac, and a password prompt raised from afar is a phishing pattern. `lid.setup` says when
+  the permission is missing, so ChatGPT can send the person there.
+- `settings.preferences.write` and `.reset`: the heat guard's sensitivity and the page's tiles.
+  The host stores whatever fits the schema and the plugin's server cannot vet a write, so
+  describing them would let a remote caller weaken the guard of a hot Mac with its lid closed.
+  `thermal.settings` shows what the guard applies.
+- `settings.preferences.read`: nothing an assistant needs that the status does not already say.
+
+No status field is hidden (`HIDDEN_FIELDS` is empty), because nothing in the status is a secret.
+The wake link is a LAN address that only wakes the Mac, and warm-up's results name each login by
+its email, as the accounts plugin does.
+
+**There is no fan control.** Caffeine reads the fans through its read-only helper (rpm,
+minimum, maximum, and whether another app has taken one over). It never sets a speed, so no
+operation offers one. The fan popup on the page sets the heat guard's threshold, not the fans.
+
+God Mode reads the description on every call, so a change here reaches ChatGPT with the next
+`paseo plugin reload caffeine`, with no God Mode release.
+
+## Definition of Done: ChatGPT sees it too
+
+Caffeine is used from ChatGPT as much as from the page, and ChatGPT can use only what
+`meta.describe` declares. So nothing is done until all of this holds for it. That covers every
+new feature, RPC, status field and metric, and every new control on the page or in the Command
+Center:
+
+1. **Described, or kept back with a reason.** It gets a read or an action in `OPERATIONS`
+   (`server/capabilities.server.ts`), or an entry in `NOT_FOR_ASSISTANTS` (an RPC) or
+   `HIDDEN_FIELDS` (a status field) that says why not. A new status field also goes into
+   `EVERYTHING`, and into the `fields` of every read and action whose answer it belongs to.
+2. **Explained.** The operation's `description` says what each field it returns means, with
+   units (°C, rpm, watts, RFC 3339) and the values of an enum. God Mode cuts a description at
+   600 characters, a title at 80 and the summary at 300.
+3. **Its risk decided.** Each risk level has its own rule:
+   - `low` is only for what stays on the Mac and is undone with one more call.
+   - `outward` is for anything that reaches a service or a person in the user's name.
+   - `disruptive` is for anything that can put the Mac to sleep or cut it off: sleep, Off,
+     While agents work, lid mode off.
+
+   Anything but `low` gets a `confirmText` that a listener understands: what will happen, no
+   field names. Never describe what needs a person at the Mac (the password dialog), what weakens
+   the heat guard, or what returns a secret.
+4. **Honest.** An action answers with `answer` and works out `refused` and `problem` from the
+   status after the change (`server/actions.server.ts`), never from what was asked. When the
+   change cannot take, it refuses before changing anything; when part of it does not take, it
+   says which part. A call that can outlast the 30 s RPC timeout gets a way to answer at once.
+5. **Tested.** `server/capabilities.test.ts` fails on any of these:
+   - an RPC or a status field that is neither described nor kept back;
+   - a field an operation names that its RPC does not answer with;
+   - a field no description explains;
+   - an action missing from the risk lists;
+   - anything over God Mode's limits.
+
+   The action's verdicts go into `server/actions.test.ts`. `npm test` and `npm run typecheck`
+   both pass.
+6. **Documented.** The tables above list it.
+
+To see it as ChatGPT will, run `paseo plugin reload caffeine`. Then, from God Mode's
+`gpt-site/`, `node core/probe.mjs plugins` shows the catalog and `node core/probe.mjs
+plugin-read caffeine heat` shows one read, the way ChatGPT gets them. Nothing in God Mode
+changes.
 
 ## Things that are the way they are for a reason
 
@@ -288,10 +397,10 @@ themselves through the same `formatRemaining` the countdown uses — 30 becomes 
 
 **The host's `SettingsSwitch` needs a full-width row.** Given half a phone's width it
 wraps the label, wraps the hint, and drops the toggle onto a line of its own — three
-ragged lines where the rest of the page has tidy tiles. The display toggle is a
-`ModeCard` instead, showing "on" the same way a chosen mode does: by the border, with
-`MonitorOff`/`Monitor` carrying the state as well. The lid switch is a chip inside the
-timer's card, showing "on" the same way a chosen length does. **Sleep now** is the same tile shape
+ragged lines where the rest of the page has tidy tiles. The display and lid switches are
+`ModeCard`s instead, showing "on" the same way a chosen mode does: by the border, with
+`MonitorOff`/`Monitor` carrying the display's state and `LaptopMinimal`/`LaptopMinimalCheck`
+whether lid mode is on. **Sleep now** is the same tile shape
 without a state to show — it borrows the selected look only while the request is in
 flight, which on a phone is the last thing rendered before the connection dies. The app ships the whole lucide
 set, which is worth checking in

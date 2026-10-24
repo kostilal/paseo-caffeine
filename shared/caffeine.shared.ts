@@ -233,6 +233,20 @@ export const status = z.object({
   thermal: thermalStatus.prefault({}),
 });
 
+/**
+ * What a change answers: the status after it, and a verdict on this one call, read from the
+ * system after the change rather than from what was asked (server/actions.server.ts). An
+ * assistant relaying the answer (God Mode, see server/capabilities.server.ts) reports a
+ * refusal as not done; the page reads the status and ignores both.
+ */
+export const answer = status.extend({
+  /** Why nothing was changed, or "" when the change was made. */
+  refused: z.string().default(""),
+  /** What did not take although the change was made (lid mode that did not come on, a hold
+   *  that could not start), or "". */
+  problem: z.string().default(""),
+});
+
 export const setInput = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("off") }),
   z.object({ mode: z.literal("on") }),
@@ -248,6 +262,7 @@ export const setOptionsInput = z.object({
 
 export type Mode = z.output<typeof mode>;
 export type Status = z.output<typeof status>;
+export type Answer = z.output<typeof answer>;
 export type SetInput = z.output<typeof setInput>;
 export type SetOptionsInput = z.output<typeof setOptionsInput>;
 export type Battery = z.output<typeof battery>;
@@ -266,7 +281,7 @@ export type ThermalStatus = z.output<typeof thermalStatus>;
 export const dismissThermal = defineRpc({
   name: "caffeine.thermal-dismiss",
   input: z.object({}),
-  output: status,
+  output: answer,
 });
 
 export const getStatus = defineRpc({
@@ -278,7 +293,7 @@ export const getStatus = defineRpc({
 export const setMode = defineRpc({
   name: "caffeine.set",
   input: setInput,
-  output: status,
+  output: answer,
 });
 
 /**
@@ -291,7 +306,7 @@ export const setOptions = defineRpc({
   // throws on a capital, which takes the whole plugin down at import time.
   name: "caffeine.set-options",
   input: setOptionsInput,
-  output: status,
+  output: answer,
 });
 
 /**
@@ -310,7 +325,7 @@ export const SLEEP_DELAY_MS = 1_000;
 export const sleepNow = defineRpc({
   name: "caffeine.sleep",
   input: z.object({}),
-  output: status,
+  output: answer,
 });
 
 /** "off" is the header alert's one action. "on" turns lid mode back on the way the timer or
@@ -319,7 +334,7 @@ export const sleepNow = defineRpc({
 export const setLid = defineRpc({
   name: "caffeine.lid",
   input: z.object({ lid: z.enum(["on", "off"]) }),
-  output: status,
+  output: answer,
 });
 
 /** The one-time permission for lid mode, through macOS's own password dialog on the Mac. */
@@ -329,20 +344,30 @@ export const setupLid = defineRpc({
   output: status,
 });
 
+/** The warm-up's hour. */
+export const warmupTime = z
+  .string()
+  .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+  .describe("Local time of day, HH:MM on a 24-hour clock");
+
 /** Turns the warm-up on or off, or moves its hour. */
 export const setWarmup = defineRpc({
   name: "caffeine.warmup",
   input: z.object({
     enabled: z.boolean().optional(),
-    time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+    time: warmupTime.optional(),
   }),
-  output: status,
+  output: answer,
 });
 
-/** Warms every login up now, whatever the schedule; answers once it is done. */
+/**
+ * Warms every login up now, whatever the schedule; answers once it is done. `wait: false`
+ * answers at once instead, with the warm-up running, for a caller that cannot wait: a plugin
+ * RPC times out at 30 s, and a warm-up takes seconds per login.
+ */
 export const runWarmup = defineRpc({
   name: "caffeine.warmup-now",
-  input: z.object({}),
-  output: status,
+  input: z.object({ wait: z.boolean().default(true) }),
+  output: answer,
 });
 

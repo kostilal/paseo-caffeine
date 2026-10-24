@@ -7,6 +7,7 @@ import { HEAT_FILES, createLid, systemLidDeps } from "./server/lid.server.ts";
 import { emergencySleep, parseSystemSleepHolders } from "./server/emergency.server.ts";
 import { HEAT_TICK_MS, createHeat, fileLatch, fileLock } from "./server/heat.server.ts";
 import { runCommand, systemHeatSensors } from "./server/sensors.server.ts";
+import { createActions } from "./server/actions.server.ts";
 import { createAgentsProbe } from "./server/agents.server.ts";
 import { createBatteryProbe } from "./server/battery.server.ts";
 import { describeCaffeine, describeRpc } from "./server/capabilities.server.ts";
@@ -121,11 +122,14 @@ export default function contribute(server: PluginServerContext) {
   // heat guard keeps its defaults where it is not. Warm-up's switch is handled by the
   // Settings screen itself (client/settings.tsx).
   let stopPreferences: () => unknown = () => undefined;
+  // Read by the warm-up switch, which refuses to come on while hidden (server/actions.server.ts).
+  let warmupHidden = false;
   try {
     const handle = server.registerSettings(preferences) as unknown as Partial<HostSettings> | undefined;
     const apply = (state: HostSettingsState) => {
       if (state.status !== "ready" || !state.values) return;
       heat.setStored(state.values);
+      warmupHidden = state.values.warmup === false;
       // Warm-up hidden is warm-up off, whether hidden by hand or by default: nothing unseen
       // messages the accounts. Only once warm-up has read its own state, so its hour survives.
       if (state.values.warmup === false) {
@@ -149,11 +153,12 @@ export default function contribute(server: PluginServerContext) {
   void heat.tick().catch((error) => console.error(`caffeine: heat check failed: ${String(error)}`));
   const heatWatch = setInterval(() => void heat.tick().catch((error) => console.error(`caffeine: heat check failed: ${String(error)}`)), HEAT_TICK_MS);
 
-  server.handle(dismissThermal, async (_input, { paseo }) => {
+  // Every change answers with a verdict on itself as well as the status (server/actions.server.ts).
+  const actions = createActions({ controller: startedServer, lid, heat, warmup, warmupHidden: () => warmupHidden, log });
+
+  server.handle(dismissThermal, (_input, { paseo }) => {
     probe.remember(paseo);
-    const instance = await startedServer();
-    await heat.dismiss();
-    return instance.status();
+    return actions.dismissHeat();
   });
 
   server.handle(getStatus, async (_input, { paseo }) => {
@@ -162,32 +167,24 @@ export default function contribute(server: PluginServerContext) {
     return instance.status();
   });
 
-  server.handle(setMode, async (input, { paseo }) => {
+  server.handle(setMode, (input, { paseo }) => {
     probe.remember(paseo);
-    const instance = await startedServer();
-    return instance.set(input);
+    return actions.set(input);
   });
 
-  server.handle(setOptions, async (input, { paseo }) => {
+  server.handle(setOptions, (input, { paseo }) => {
     probe.remember(paseo);
-    const instance = await startedServer();
-    return instance.setOptions(input);
+    return actions.setOptions(input);
   });
 
-  server.handle(sleepNow, async (_input, { paseo }) => {
+  server.handle(sleepNow, (_input, { paseo }) => {
     probe.remember(paseo);
-    const instance = await startedServer();
-    // With sleep switched off system-wide, `pmset sleepnow` does nothing: lid mode goes first.
-    if (lid.status().on) await lid.disable("sleep now", "sleep");
-    return instance.sleep();
+    return actions.sleep();
   });
 
-  server.handle(setLid, async (input, { paseo }) => {
+  server.handle(setLid, (input, { paseo }) => {
     probe.remember(paseo);
-    const instance = await startedServer();
-    if (input.lid === "on") return instance.syncLid();
-    await lid.disable("turned off", "off");
-    return instance.status();
+    return actions.lid(input);
   });
 
   server.handle(setupLid, async (_input, { paseo }) => {
@@ -202,18 +199,14 @@ export default function contribute(server: PluginServerContext) {
     return instance.syncLid();
   });
 
-  server.handle(setWarmup, async (input, { paseo }) => {
+  server.handle(setWarmup, (input, { paseo }) => {
     probe.remember(paseo);
-    const instance = await startedServer();
-    await warmup.set(input);
-    return instance.status();
+    return actions.setWarmup(input);
   });
 
-  server.handle(runWarmup, async (_input, { paseo }) => {
+  server.handle(runWarmup, (input, { paseo }) => {
     probe.remember(paseo);
-    const instance = await startedServer();
-    await warmup.runNow();
-    return instance.status();
+    return actions.runWarmup(input);
   });
 
   // For God Mode: the operations above, described for an assistant that cannot see them.
