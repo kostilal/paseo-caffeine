@@ -135,12 +135,19 @@ older than a minute and a half.
 ## Installing it
 
 ```sh
+paseo plugin add git:kostilal/paseo-caffeine
+paseo plugin update caffeine               # later, to take what is new on main
+```
+
+Then **Caffeine** in the sidebar, or ⌘K and type "caffeine".
+
+To work on it from a clone instead:
+
+```sh
 npm install
 paseo plugin install ./paseo-caffeine      # once
 paseo plugin reload caffeine               # after every change
 ```
-
-Then **Caffeine** in the sidebar, or ⌘K and type "caffeine".
 
 ## How it works
 
