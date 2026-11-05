@@ -68,6 +68,18 @@ function oneDecimal(watts: number): number {
 }
 
 /**
+ * On macOS 27.2 the battery's registry entry has children (the pack, its banks and cells), and
+ * an entry with children is printed with the tree's guides in front of every line:
+ *
+ *     |   "Voltage" = 12900
+ *
+ * They come off here. Output without them, as older macOS prints it, is read as it came.
+ */
+function withoutGuides(text: string): string {
+  return /^[ \t]*\|/m.test(text) ? text.replace(/^[ \t|]+(?=")/gm, "") : text;
+}
+
+/**
  * The watts in `ioreg -rw0 -c AppleSmartBattery`, which is where the menu-bar wattage
  * tools read them too:
  *
@@ -81,7 +93,8 @@ function oneDecimal(watts: number): number {
  * read as null rather than as a charger rated at nothing. A Mac without the telemetry
  * dictionary (the older Intel ones) gets the adapter's rating and the battery flow only.
  */
-export function parsePower(text: string): Power {
+export function parsePower(output: string): Power {
+  const text = withoutGuides(output);
   const external = /^\s*"ExternalConnected" = Yes\s*$/m.test(text);
 
   const rated = nested(text, "AdapterDetails", "Watts");

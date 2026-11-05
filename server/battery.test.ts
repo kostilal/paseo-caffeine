@@ -41,6 +41,38 @@ const IOREG_DISCHARGING = `+-o AppleSmartBattery  <class AppleSmartBattery>
     }
 `;
 
+/** The entry's children as macOS 27.2 lists them, after its properties. */
+const CHILDREN = [
+  "  | ", // the line between the properties and the children keeps a space after its guide
+  "  +-o AppleSmartBatteryPack  <class AppleSmartBatteryPack, id 0x100000b6f, registered, matched, active, busy 0 (2 ms), retain 9>",
+  "  | +-o AppleSmartBatteryBank  <class AppleSmartBatteryBank, id 0x100000b70, registered, matched, active, busy 0 (0 ms), retain 8>",
+  "  | | +-o AppleSmartBatteryCell  <class AppleSmartBatteryCell, id 0x100000b71, registered, matched, active, busy 0 (0 ms), retain 6>",
+  "  +-o AppleChargerData  <class AppleChargerData, id 0x100000b7c, registered, matched, active, busy 0 (0 ms), retain 6>",
+  "",
+].join("\n");
+
+/**
+ * `ioreg -rw0 -c AppleSmartBattery` as macOS 27.2 prints it, trimmed, with this Mac's own values
+ * on the charger and a full battery. The entry has children now, and an entry with children is
+ * printed with the tree's guides in front of every line.
+ */
+const IOREG_27_2 = `+-o AppleSmartBattery  <class AppleSmartBattery, id 0x100000b5b, registered, matched, active, busy 0 (3 ms), retain 11>
+  | {
+  |   "ExternalConnected" = Yes
+  |   "AdapterDetails" = {"IsWireless"=No,"AdapterID"=0,"AdapterVoltage"=20000,"FamilyCode"=18446744073172697098,"AdapterPowerTier"=2,"Watts"=90,"UsbHvcHvcIndex"=3,"Current"=4500,"PMUConfiguration"=4460,"UsbHvcMenu"=({"Index"=0,"MaxCurrent"=3000,"MaxVoltage"=5000},{"Index"=3,"MaxCurrent"=4500,"MaxVoltage"=20000})}
+  |   "Voltage" = 12899
+  |   "PowerTelemetryData" = {"SystemPowerInAccumulatorCount"=54314,"SystemLoad"=13320,"SystemVoltageIn"=19840,"SystemPowerIn"=13320,"AccumulatedSystemPowerIn"=40225844131,"BatteryPower"=0}
+  |   "Amperage" = 0
+  |   "IsCharging" = No
+  | }
+${CHILDREN}`;
+
+/** What 27.2 does to an entry of the older layout: a guide in front of every line, then its children. */
+function withGuides(entry: string): string {
+  const [header, ...lines] = entry.trimEnd().split("\n");
+  return [header, ...lines.map((line) => line.replace(/^ {2} /, "  |"))].join("\n") + "\n" + CHILDREN;
+}
+
 const DISCHARGING = `Now drawing from 'Battery Power'
  -InternalBattery-0 (id=34930787)\t87%; discharging; 4:32 remaining present: true
 `;
@@ -126,6 +158,16 @@ test("a trickle that rounds to nothing is not shown as zero watts", () => {
 
 test("ioreg output with none of the keys reads as no watts at all", () => {
   assert.deepEqual(parsePower(""), NO_WATTS);
+});
+
+test("macOS 27.2 draws the tree's guides before every line, and the watts read the same", () => {
+  assert.deepEqual(parsePower(IOREG_27_2), { adapterWatts: 90, inputWatts: 13.3, batteryWatts: 0 });
+});
+
+test("the older layout, drawn with the guides, reads as it did without them", () => {
+  for (const entry of [IOREG_CHARGING, IOREG_DISCHARGING]) {
+    assert.deepEqual(parsePower(withGuides(entry)), parsePower(entry));
+  }
 });
 
 test("the probe merges the watts into the battery", async () => {
