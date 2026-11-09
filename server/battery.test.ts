@@ -67,6 +67,21 @@ const IOREG_27_2 = `+-o AppleSmartBattery  <class AppleSmartBattery, id 0x100000
   | }
 ${CHILDREN}`;
 
+/**
+ * Trimmed from a real capture on macOS 27.2, seconds after the charger went in: the power field
+ * still reads 0, the current and voltage beside it are real, the battery's figures are the old ones.
+ */
+const IOREG_27_2_PLUGGED_IN = `+-o AppleSmartBattery  <class AppleSmartBattery, id 0x100000b5b, registered, matched, active, busy 0 (3 ms), retain 11>
+  | {
+  |   "ExternalConnected" = Yes
+  |   "AdapterDetails" = {"IsWireless"=No,"AdapterID"=0,"AdapterVoltage"=20000,"AdapterPowerTier"=2,"Watts"=65,"Current"=3250,"Description"="pd charger"}
+  |   "Voltage" = 11315
+  |   "PowerTelemetryData" = {"SystemPowerInAccumulatorCount"=259977,"SystemLoad"=18446744073709488698,"SystemCurrentIn"=3842,"SystemVoltageIn"=19602,"SystemPowerIn"=0,"BatteryPower"=62918}
+  |   "Amperage" = 18446744073709550652
+  |   "IsCharging" = No
+  | }
+${CHILDREN}`;
+
 /** What 27.2 does to an entry of the older layout: a guide in front of every line, then its children. */
 function withGuides(entry: string): string {
   const [header, ...lines] = entry.trimEnd().split("\n");
@@ -184,4 +199,18 @@ test("a failed ioreg leaves the battery as pmset reports it, without watts", asy
     () => Promise.reject(new Error("ioreg: not found")),
   );
   assert.deepEqual(await probe.read(), { percent: 45, charging: true, charged: false, external: true, minutes: 83, ...NO_WATTS });
+});
+
+test("the moment the charger goes in the power reads 0, and the current and voltage beside it stand in", () => {
+  assert.deepEqual(parsePower(IOREG_27_2_PLUGGED_IN), { adapterWatts: 65, inputWatts: 75.3, batteryWatts: -10.9 });
+});
+
+test("a power field that reads a real figure is used as it is, whatever the current and voltage say", () => {
+  const steady = IOREG_27_2_PLUGGED_IN.replace('"SystemPowerIn"=0', '"SystemPowerIn"=63240');
+  assert.equal(parsePower(steady).inputWatts, 63.2);
+});
+
+test("no current and no voltage still means nothing is coming in", () => {
+  const nothing = IOREG_27_2_PLUGGED_IN.replace('"SystemCurrentIn"=3842', '"SystemCurrentIn"=0');
+  assert.equal(parsePower(nothing).inputWatts, null);
 });

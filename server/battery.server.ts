@@ -100,8 +100,12 @@ export function parsePower(output: string): Power {
   const rated = nested(text, "AdapterDetails", "Watts");
   const adapterWatts = external && rated !== null && rated > 0 ? rated : null;
 
-  const powerIn = nested(text, "PowerTelemetryData", "SystemPowerIn");
-  const watts = powerIn === null ? 0 : oneDecimal(powerIn / 1000);
+  // For a while after the charger goes in (seen on macOS 27.2) the power field still reads 0
+  // while the current and voltage beside it, in milliamps and millivolts, are already real.
+  const reported = nested(text, "PowerTelemetryData", "SystemPowerIn") ?? 0;
+  const current = nested(text, "PowerTelemetryData", "SystemCurrentIn") ?? 0;
+  const voltage = nested(text, "PowerTelemetryData", "SystemVoltageIn") ?? 0;
+  const watts = oneDecimal((reported > 0 ? reported : (current * voltage) / 1000) / 1000);
   const inputWatts = external && watts > 0 ? watts : null;
 
   const volts = plain(text, "Voltage");
