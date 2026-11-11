@@ -320,6 +320,8 @@ seconds per login.
   describing them would let a remote caller weaken the guard of a hot Mac with its lid closed.
   `thermal.settings` shows what the guard applies.
 - `settings.preferences.read`: nothing an assistant needs that the status does not already say.
+- `meta.pulse`, `caffeine.pulse` and `caffeine.pulse-events`: what Paseo Pulse reads (below). The
+  status, heat and warm-up reads already say all of it.
 
 No status field is hidden (`HIDDEN_FIELDS` is empty), because nothing in the status is a secret.
 The wake link is a LAN address that only wakes the Mac, and warm-up's results name each login by
@@ -331,6 +333,32 @@ operation offers one. The fan popup on the page sets the heat guard's threshold,
 
 God Mode reads the description on every call, so a change here reaches ChatGPT with the next
 `paseo plugin reload caffeine`, with no God Mode release.
+
+## In Paseo Pulse
+
+Paseo Pulse shows plugins' readings in Paseo, in widgets and in notifications. Caffeine answers it
+with three RPCs (`server/pulse.server.ts`, contract `paseo.pulse/1`):
+
+- `meta.pulse`, the manifest: eleven readings (mode and its timer, the hold, lid mode, the battery,
+  its temperature, the CPU, the heat guard and when it fires, warm-up and its next run), the
+  actions Pulse may offer, and the events it may notify. Every action is the `meta.describe`
+  operation of the same id, so its risk and confirmation come from there. Only Keep awake, the
+  timer (1, 2, 0.5, 3, 8 and 12 h) and Dismiss start on; the ones that can let the Mac sleep start
+  off, and Pulse only ever offers those in its app, after a confirmation. The rest are kept back in
+  `NOT_FOR_PULSE`, each with its reason.
+- `caffeine.pulse`, the readings: cut from the status the controller already holds, with no
+  process and no network. Nothing that ticks (the tick, the battery's minutes and watts) and
+  nothing personal (the wake link, the warm-up's logins) goes in, so `ifRev` can answer
+  `unchanged`.
+- `caffeine.pulse-events`, by cursor: the heat guard's trips (`heat_trip`; `heat_trip_dry` for a
+  dry run or simulated readings, as info; `heat_sleep_failed` when the sleep did not take), lid
+  mode that ended by itself (`lid_ended`: battery, heat, by hand) and failed warm-ups. Kept in
+  memory, the newest 200; a restart empties it, and a cursor from before reads as a gap.
+
+**Show in Pulse** in Caffeine's Settings (on by default) takes the readings out and marks every
+action `never`, so Pulse cannot offer it anywhere; the heat alerts still come. The handlers never
+refuse: they cannot tell Pulse from anybody else. `server/pulse.test.ts` fails on a new action of
+`meta.describe` until it is in `PULSE_ACTIONS` or `NOT_FOR_PULSE`.
 
 ## Definition of Done: ChatGPT sees it too
 

@@ -18,6 +18,8 @@ import type { WarmupStatus } from "../shared/caffeine.shared.ts";
 export const WARMUP_FILE = join(homedir(), ".jobby-jobs", "caffeine-warmup.json");
 /** How long after the hour a missed warm-up still runs. */
 export const CATCH_UP_MS = 30 * 60_000;
+/** Why a login gets no warm-up message: an API login, which has no 5-hour window to start. */
+export const SKIP_NOT_SUBSCRIPTION = "skipped: not a Claude subscription login";
 const PING_TIMEOUT_MS = 90_000;
 
 /** Variables that would make `claude` run as something other than the directory's login: an
@@ -163,7 +165,7 @@ export function warmupTargets(entries: ReadonlyArray<{ dir: string; status: Auth
     .map(({ dir, status }) => ({
       dir,
       label: `${status.email || "?"} (${dir.slice(dir.lastIndexOf("/") + 1)})`,
-      skip: subscriptionLogin(status) ? "" : "skipped: not a Claude subscription login",
+      skip: subscriptionLogin(status) ? "" : SKIP_NOT_SUBSCRIPTION,
     }));
 }
 
@@ -181,6 +183,9 @@ export interface WarmupDeps {
   logins(): Promise<Login[]>;
   /** Sends one tiny message on the directory's login. */
   ping(dir: string): Promise<{ ok: boolean; error: string }>;
+  /** After every warm-up, with the logins it sent to and how many of them failed (skipped ones
+   *  are neither); for Paseo Pulse's events (server/pulse.server.ts). */
+  onRun?(run: { at: string; total: number; failed: number }): void;
   now?: () => Date;
   log?: (line: string) => void;
 }
@@ -222,6 +227,8 @@ export function createWarmup(deps: WarmupDeps): Warmup {
         results.push({ login: login.label, ok: outcome.ok, error: outcome.ok ? "" : outcome.error });
       }
       await save({ ...value, lastAt: at.toISOString(), results });
+      const sent = logins.filter((login) => !login.skip).length;
+      deps.onRun?.({ at: at.toISOString(), total: sent, failed: results.filter((result, i) => !logins[i]?.skip && !result.ok).length });
       log(`caffeine: warm-up: ${results.map((r) => `${r.login} ${r.ok ? "ok" : "failed"}`).join(", ") || "no logged-in accounts"}`);
     } finally {
       running = false;

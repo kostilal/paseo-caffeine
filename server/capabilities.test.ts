@@ -7,6 +7,7 @@ import type { PluginRpcContract } from "@getpaseo/plugin";
 import * as shared from "../shared/caffeine.shared.ts";
 import { runWarmup, setMode, status } from "../shared/caffeine.shared.ts";
 import { EVERYTHING, HIDDEN_FIELDS, NOT_FOR_ASSISTANTS, OPERATIONS, capabilities, describeCaffeine, describeRpc } from "./capabilities.server.ts";
+import { pulseEventsRpc, pulseManifestRpc, pulseSnapshotRpc } from "./pulse.server.ts";
 
 /**
  * What ChatGPT can see and do through God Mode is this description, so these tests hold it to
@@ -46,7 +47,7 @@ const isSettings = (value: unknown): value is { id: string } =>
 /** Every RPC a paired client can call, read from what index.server.ts registers. */
 function publicRpcs(): string[] {
   const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "index.server.ts"), "utf8");
-  const known: Record<string, unknown> = { ...shared, describeRpc };
+  const known: Record<string, unknown> = { ...shared, describeRpc, pulseManifestRpc, pulseSnapshotRpc, pulseEventsRpc };
   const names: string[] = [];
   for (const [, id] of source.matchAll(/server\.handle\((\w+)/g)) {
     const contract = known[id ?? ""];

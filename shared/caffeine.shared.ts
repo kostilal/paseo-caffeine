@@ -29,6 +29,9 @@ export const preferences = defineSettings({
     /** The fans' trigger: any fan at this share of its own maximum, for `fanDelayS`. */
     fanPct: z.number().int().default(85),
     fanDelayS: z.number().int().default(60),
+    /** Whether Paseo Pulse may show Caffeine: off, it gets no readings and no buttons
+     *  (server/pulse.server.ts). A new key, so the host fills in its default for everybody. */
+    pulse: z.boolean().default(true),
   }),
   // The host keeps the whole document, defaults included, so a new default reaches nobody who
   // has one: version 3 hides the timer and warm-up for everyone once, and they can be shown
@@ -64,6 +67,7 @@ export const defaultPreferences: Preferences = {
   thermalCooldownMin: 5,
   fanPct: 85,
   fanDelayS: 60,
+  pulse: true,
 };
 
 export const mode = z.enum(["off", "on", "timer", "auto"]);

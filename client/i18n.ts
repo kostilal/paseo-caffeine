@@ -61,6 +61,9 @@ export interface Strings {
   settingsTitle: string;
   settingsWarmupHint: string;
   settingsTimerHint: string;
+  /** The switch that shows Caffeine in Paseo Pulse, and what turning it off does. */
+  settingsPulse: string;
+  settingsPulseHint: string;
   /** The lid switch on, with the timer row hidden: only On is left to use it. */
   lidIdleOn: string;
   /** The heat block on the page (client/heat.tsx). */
@@ -216,6 +219,8 @@ const en: Strings = {
   settingsTitle: "Settings",
   settingsWarmupHint: "Off: no tile on the page, and no warm-up runs.",
   settingsTimerHint: "Off: no timer row on the page; a timer already running still ends on time.",
+  settingsPulse: "Show in Pulse",
+  settingsPulseHint: "Off: Paseo Pulse shows no readings and offers no buttons for Caffeine; heat alerts still come.",
   lidIdleOn: "works under On",
   heatTitle: "Heat",
   pressureLevel: (level) => ["Nominal", "Moderate", "Heavy", "Trapping", "Sleeping"][level] ?? String(level),
@@ -354,6 +359,8 @@ const ru: Strings = {
   settingsTitle: "Настройки",
   settingsWarmupHint: "Выключено: карточки нет, прогрев не запускается.",
   settingsTimerHint: "Выключено: строки таймера на странице нет; запущенный таймер доработает.",
+  settingsPulse: "Показывать в Pulse",
+  settingsPulseHint: "Выключено: Paseo Pulse не показывает показания Кофеина и не предлагает его кнопки; тревоги о перегреве приходят по-прежнему.",
   lidIdleOn: "работает в режиме Вкл",
   heatTitle: "Нагрев",
   pressureLevel: (level) => ["Норма", "Умеренное", "Сильное", "Критическое", "Сон"][level] ?? String(level),
@@ -492,6 +499,8 @@ const uk: Strings = {
   settingsTitle: "Налаштування",
   settingsWarmupHint: "Вимкнено: картки немає, прогрів не запускається.",
   settingsTimerHint: "Вимкнено: рядка таймера на сторінці немає; запущений таймер допрацює.",
+  settingsPulse: "Показувати в Pulse",
+  settingsPulseHint: "Вимкнено: Paseo Pulse не показує показники Кофеїну й не пропонує його кнопки; тривоги про перегрів надходять, як і раніше.",
   lidIdleOn: "працює в режимі Увімк",
   heatTitle: "Нагрів",
   pressureLevel: (level) => ["Норма", "Помірне", "Сильне", "Критичне", "Сон"][level] ?? String(level),

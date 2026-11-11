@@ -111,6 +111,12 @@ export const NOT_FOR_ASSISTANTS: Record<string, string> = {
   "settings.preferences.read":
     "The raw preferences: the page's tile choices and the guard's sensitivity as stored. The values the guard applies are in thermal.settings, and the warm-up switch says when its tile is hidden, so nothing an assistant needs is only here.",
   "meta.describe": "This description itself.",
+  "meta.pulse":
+    "What Caffeine shows in Paseo Pulse's widgets and notifications (server/pulse.server.ts): which readings, which of the actions above, which events. Everything in it is already readable through the status, heat and warm-up reads.",
+  "caffeine.pulse":
+    "The same status cut down for Pulse's widgets, without the wake link, the time of the tick or the warm-up's logins; the status read answers all of it and more.",
+  "caffeine.pulse-events":
+    "A feed by cursor of the heat guard's trips, lid mode that ended by itself and warm-ups that failed, for Pulse's notifications. The current trip is already in the heat read (thermal.event), lid mode's end in lid.ended.",
 };
 
 /**

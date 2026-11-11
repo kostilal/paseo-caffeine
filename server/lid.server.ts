@@ -420,6 +420,10 @@ export interface LidDeps {
   /** Whether the heat guard has tripped: sleep switched back on under a trip reads as heat,
    *  not as somebody's hand. */
   latched?(): boolean;
+  /** Lid mode ended by itself while Caffeine watched: a low battery, macOS's thermal warning,
+   *  or sleep switched back on by hand. Never for its deadline, a person's turn-off or the heat
+   *  guard's (that one is its trip). For Paseo Pulse's events (server/pulse.server.ts). */
+  onEnded?(why: "battery" | "heat" | "manual", detail: string): void;
   now?: () => number;
   log?: (line: string) => void;
 }
@@ -591,12 +595,18 @@ export function createLid(deps: LidDeps): Lid {
         if (!stored.forever && deadline() <= now()) return restore("time is up");
         if (battery !== null && !battery.external && battery.percent < LID_LOW_BATTERY) {
           await restore(`battery at ${battery.percent}%`);
-          if (!running()) because({ ended: "battery" });
+          if (!running()) {
+            because({ ended: "battery" });
+            deps.onEnded?.("battery", `battery at ${battery.percent}%`);
+          }
           return;
         }
         if (await hot()) {
           await restore("the Mac is running hot");
-          if (!running()) because({ ended: "heat" });
+          if (!running()) {
+            because({ ended: "heat" });
+            deps.onEnded?.("heat", "the Mac is running hot");
+          }
           return;
         }
         // Turned back on by hand (`pmset -a disablesleep 0`), or by the heat guard's sh half:
@@ -604,7 +614,9 @@ export function createLid(deps: LidDeps): Lid {
         if (on === false) {
           await deps.stopGuard().catch(() => undefined);
           await save(OFF_STATE);
-          because(deps.latched?.() ? { ended: "heat" } : { stopped: "manual" });
+          const latched = deps.latched?.() ?? false;
+          because(latched ? { ended: "heat" } : { stopped: "manual" });
+          if (!latched) deps.onEnded?.("manual", "sleep was switched back on by hand");
         }
       }),
 

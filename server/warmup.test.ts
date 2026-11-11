@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   CATCH_UP_MS,
   type Login,
+  SKIP_NOT_SUBSCRIPTION,
   type WarmupStored,
   claudeEnv,
   createWarmup,
@@ -177,4 +178,25 @@ test("every logged-in folder is warmed up, even when two name the same login", (
       ["/h/.claude-api", "c@z (.claude-api)", "skipped: not a Claude subscription login"],
     ],
   );
+});
+
+test("after every warm-up Pulse hears how many logins it sent to and how many failed; skipped ones are neither", async () => {
+  const runs: Array<{ at: string; total: number; failed: number }> = [];
+  let value = on();
+  const warmup = createWarmup({
+    read: async () => value,
+    write: async (next) => void (value = next),
+    logins: async () => [
+      { dir: "/h/.claude", label: "a@x" },
+      { dir: "/h/.claude-work", label: "b@y" },
+      { dir: "/h/.claude-api", label: "api@x", skip: SKIP_NOT_SUBSCRIPTION },
+    ],
+    ping: async (dir) => (dir === "/h/.claude-work" ? { ok: false, error: "rate limited" } : { ok: true, error: "" }),
+    onRun: (run) => void runs.push(run),
+    now: () => at(6, 1),
+  });
+  await warmup.start();
+  await warmup.runNow();
+  assert.deepEqual(runs, [{ at: at(6, 1).toISOString(), total: 2, failed: 1 }]);
+  assert.equal(value.results[2]?.error, SKIP_NOT_SUBSCRIPTION, "the skip still reads the same on the page");
 });

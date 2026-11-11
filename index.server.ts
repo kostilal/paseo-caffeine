@@ -13,6 +13,8 @@ import { createBatteryProbe } from "./server/battery.server.ts";
 import { describeCaffeine, describeRpc } from "./server/capabilities.server.ts";
 import { type Controller, createController } from "./server/controller.server.ts";
 import { createKeeper } from "./server/keeper.server.ts";
+import { createEventRing } from "./server/pulse-events.server.ts";
+import { createPulse, pulseEventsRpc, pulseManifestRpc, pulseSnapshotRpc } from "./server/pulse.server.ts";
 import { renderWakePage } from "./server/page.server.ts";
 import { createSleeper } from "./server/sleeper.server.ts";
 import { readStored, writeStored } from "./server/state.server.ts";
@@ -42,10 +44,14 @@ export default function contribute(server: PluginServerContext) {
   });
   const sleeper = createSleeper({ log: (line) => console.log(line) });
   const log = (line: string) => console.log(line);
+  // Paseo Pulse (server/pulse.server.ts): reads the controller's status, and hears from lid
+  // mode, the heat guard and warm-up when something happens. `controller` and `heat` are
+  // referenced before their declarations on purpose, as above.
+  const pulse = createPulse({ ring: createEventRing(), status: () => controller.status() });
   const keeper = createKeeper({ pidFile: HEAT_FILES.keeperPid });
   // `heat` is referenced before its declaration on purpose: lid mode asks it only once a
   // person turns lid mode on, long after both exist.
-  const lid = createLid({ ...systemLidDeps(log), gate: () => heat.gate(), latched: () => heat.latched() });
+  const lid = createLid({ ...systemLidDeps(log), gate: () => heat.gate(), latched: () => heat.latched(), onEnded: (why, detail) => pulse.lidEnded(why, detail) });
   const heatLock = fileLock(HEAT_FILES.lock);
   const heatLatch = fileLatch(HEAT_FILES.latch);
   const heat = createHeat({
@@ -80,7 +86,7 @@ export default function contribute(server: PluginServerContext) {
     },
     log,
   });
-  const warmup = createWarmup(systemWarmupDeps((line) => console.log(line)));
+  const warmup = createWarmup({ ...systemWarmupDeps((line) => console.log(line)), onRun: (run) => pulse.warmupRan(run) });
   const controller: Controller = createController({
     read: () => readStored(),
     write: (stored) => writeStored(stored),
@@ -115,6 +121,7 @@ export default function contribute(server: PluginServerContext) {
   // Restore the stored mode as soon as the daemon loads the plugin, so a Mac left
   // "on" overnight stays on through a daemon restart without anybody opening the app.
   void startedServer().catch((error) => console.error(`caffeine: start failed: ${String(error)}`));
+  void startedServer().then(() => pulse.started(true), () => pulse.started(false));
 
   // The preferences its Settings screen and the fan popup edit. SDK 0.8's types say
   // registerSettings returns nothing; the host has handed back { read, subscribe } since
@@ -129,6 +136,7 @@ export default function contribute(server: PluginServerContext) {
     const apply = (state: HostSettingsState) => {
       if (state.status !== "ready" || !state.values) return;
       heat.setStored(state.values);
+      pulse.setShown(state.values.pulse !== false);
       warmupHidden = state.values.warmup === false;
       // Warm-up hidden is warm-up off, whether hidden by hand or by default: nothing unseen
       // messages the accounts. Only once warm-up has read its own state, so its hour survives.
@@ -144,14 +152,23 @@ export default function contribute(server: PluginServerContext) {
     };
     if (typeof handle?.subscribe === "function") stopPreferences = handle.subscribe(apply);
     if (typeof handle?.read === "function") void handle.read().then(apply).catch((error) => console.error(`caffeine: preferences unreadable: ${String(error)}`));
+    // Otherwise Pulse waits a second for a read that will not come (server/pulse.server.ts).
+    else pulse.settingsUnavailable();
   } catch (error) {
     console.error(`caffeine: preferences unavailable, heat guard on its defaults: ${String(error)}`);
+    pulse.settingsUnavailable();
   }
 
   // The heat guard looks every 15 s, on its own timer: the controller's 30 s tick waits on
   // agents and the battery, and a guard should not wait on those.
-  void heat.tick().catch((error) => console.error(`caffeine: heat check failed: ${String(error)}`));
-  const heatWatch = setInterval(() => void heat.tick().catch((error) => console.error(`caffeine: heat check failed: ${String(error)}`)), HEAT_TICK_MS);
+  // After each look, Pulse hears of a trip it has not reported yet (server/pulse.server.ts).
+  const heatTick = () =>
+    heat
+      .tick()
+      .then(() => pulse.heatSeen(heat.status()))
+      .catch((error) => console.error(`caffeine: heat check failed: ${String(error)}`));
+  void heatTick();
+  const heatWatch = setInterval(() => void heatTick(), HEAT_TICK_MS);
 
   // Every change answers with a verdict on itself as well as the status (server/actions.server.ts).
   const actions = createActions({ controller: startedServer, lid, heat, warmup, warmupHidden: () => warmupHidden, log });
@@ -211,6 +228,16 @@ export default function contribute(server: PluginServerContext) {
 
   // For God Mode: the operations above, described for an assistant that cannot see them.
   server.handle(describeRpc, () => describeCaffeine());
+
+  // For Paseo Pulse: what Caffeine shows there, the readings, and what happened since a cursor.
+  // The snapshot remembers the API like every other handler, so Pulse's polling also feeds
+  // Auto mode its agent count.
+  server.handle(pulseManifestRpc, () => pulse.manifest());
+  server.handle(pulseSnapshotRpc, (input, { paseo }) => {
+    probe.remember(paseo);
+    return pulse.snapshot(input);
+  });
+  server.handle(pulseEventsRpc, (input) => pulse.events(input));
 
   // Under lid mode the lid is looked at once a minute: putting the display to sleep a little
   // late is fine, and every look while the lid stays shut puts it to sleep again (checkClosed).

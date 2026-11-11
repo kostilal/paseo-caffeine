@@ -813,3 +813,45 @@ test("arming a new guard waits for launchd to let go of the old one, keeps the h
   assert.equal(files.has(HEAT_FILES.handover), false, "gone once the new guard is in");
   assert.ok(files.has(GUARD_PLIST));
 });
+
+test("Pulse hears when lid mode ends by itself: a low battery, heat, a hand; never a deadline, a person or the heat guard", async () => {
+  const ended: string[] = [];
+  const onEnded = (why: string, detail: string) => void ended.push(`${why}: ${detail}`);
+  let hot = false;
+  const mac = fakeMac({ hot: () => hot });
+  const lid = createLid({ ...mac.deps, onEnded });
+  await lid.start();
+  await lid.enable("forever");
+  await lid.tick(onBattery(15));
+  await lid.enable("forever");
+  hot = true;
+  await lid.tick(null);
+  hot = false;
+  await lid.enable("forever");
+  mac.setDisabled(false);
+  await lid.tick(null);
+  assert.deepEqual(ended, ["battery: battery at 15%", "heat: the Mac is running hot", "manual: sleep was switched back on by hand"]);
+
+  ended.length = 0;
+  await lid.enable(30);
+  mac.advance(31 * 60_000);
+  await lid.tick(null);
+  assert.equal(mac.disabled(), false, "the deadline ended it");
+  await lid.enable("forever");
+  await lid.disable("sleep now", "sleep");
+  await lid.enable("forever");
+  await lid.endForHeat();
+  // Sleep switched back on by the heat guard's sh half reads as its trip, not a hand.
+  const guarded = createLid({ ...mac.deps, onEnded, latched: () => true });
+  await guarded.start();
+  await guarded.enable("forever");
+  mac.setDisabled(false);
+  await guarded.tick(null);
+  assert.equal(guarded.status().ended, "heat");
+  // A turn-on refused while the Mac cools down says "heat" on the tile, and is no end.
+  const cooling = createLid({ ...mac.deps, onEnded, gate: async () => "cooling" });
+  await cooling.start();
+  await cooling.enable("forever");
+  assert.equal(cooling.status().ended, "heat");
+  assert.deepEqual(ended, []);
+});

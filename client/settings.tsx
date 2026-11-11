@@ -11,7 +11,7 @@ const defaultDelay = (level: Preferences["thermalPressure"]) => (level === "mode
 
 /**
  * Settings → Plugins → Caffeine → Settings: whether the page offers the timer and Session
- * warm-up at all (both hidden until asked for), and the heat guard's sensitivity. The fixed parts of the guard are listed, not offered: the
+ * warm-up at all (both hidden until asked for), whether Paseo Pulse shows Caffeine, and the heat guard's sensitivity. The fixed parts of the guard are listed, not offered: the
  * battery limit, trapping at once, and no readings with the lid closed. The fan threshold
  * lives in the popup on the page, by the fan reading it is about.
  */
@@ -52,6 +52,13 @@ export function CaffeineSettings() {
               const off = warmup ? Promise.resolve() : askWarmup({ enabled: false });
               void off.then(() => state.save({ ...state.values, warmup }, state.revision)).catch(() => undefined);
             }}
+          />
+          <SettingsSwitch
+            label={strings.settingsPulse}
+            hint={strings.settingsPulseHint}
+            value={values.pulse}
+            disabled={busy}
+            onValueChange={(pulse) => save({ pulse })}
           />
         </SettingsCard>
       </SettingsSection>
