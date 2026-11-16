@@ -151,6 +151,8 @@ export function heatShell(files: HeatFilePaths = HEAT_FILES): string {
     "pressure() { p=$($NOTIFYUTIL -g com.apple.system.thermalpressurelevel 2>/dev/null | /usr/bin/awk '{print $NF}'); case \"$p\" in 0|1|2|3|4) echo \"$p\";; esac; }",
     "battery() { t=$($IOREG -rn AppleSmartBattery 2>/dev/null | /usr/bin/awk '/^[ \\t]*\"Temperature\" = [0-9]+[ \\t]*$/ {print $NF; exit}'); if num \"$t\"; then echo \"$t\"; fi; }",
     "lid_closed() { $IOREG -r -k AppleClamshellState -d 4 2>/dev/null | /usr/bin/grep -q '\"AppleClamshellState\" = Yes'; }",
+    // Known open, which is not the same as not known closed: an unreadable lid still counts.
+    "lid_open() { $IOREG -r -k AppleClamshellState -d 4 2>/dev/null | /usr/bin/grep -q '\"AppleClamshellState\" = No'; }",
     'fans_pct() { if [ -n "$HELPER" ] && [ -f "$HELPER" ] && [ -x "$HELPER" ]; then f=$("$HELPER" --fans-pct 2>/dev/null); if num "$f"; then echo "$f"; fi; fi; }',
     "holders() { $PMSET -g assertions 2>/dev/null | /usr/bin/awk '/PreventSystemSleep named:/ { sub(/^[ \\t]*pid [0-9]+\\(/, \"\"); sub(/\\).*/, \"\"); print }' | /usr/bin/sort -u | /usr/bin/tr '\\n' ' '; }",
     "allow_sleep() {",
@@ -226,6 +228,8 @@ export function heatShell(files: HeatFilePaths = HEAT_FILES): string {
     "  read_conf",
     "  t_now=$(now); p=$(pressure); b=$(battery); closed=0",
     "  if lid_closed; then closed=1; fi",
+    // The lid known to be open: somebody is at the Mac, and nothing runs (server/thermal.ts).
+    '  if [ "$closed" = 0 ] && lid_open; then S1=; S2=; BH=0; BS=; FS=; return 0; fi',
     '  if [ -n "$p" ] && [ "$p" -ge 3 ]; then emergency trapping "Trapping"; return 0; fi',
     '  if [ -n "$p" ]; then',
     '    if [ "$p" -ge 1 ]; then [ -n "$S1" ] || S1=$t_now; else S1=; fi',

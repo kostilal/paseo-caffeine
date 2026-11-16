@@ -22,6 +22,12 @@ import { type FanReading, THERMAL_LIMITS, type ThermalReason, type ThermalSettin
  * - the fans, with the lid closed: any fan at the user's share of its own maximum for the
  *   user's delay. Fans stay at their floor in a bag (a closed MacBook at 63 °C measured with
  *   both fans at minimum), so this one is for a Mac working flat out, not a substitute.
+ *
+ * None of them acts with the lid known to be open. Somebody is at the Mac, which is not in a
+ * bag, and a busy build reaches heavy pressure within a minute: putting it to sleep then only
+ * locks the screen in front of them, again every 20 s while the sleep does not take. Every run
+ * starts from the moment the lid closes (or stops being readable), so closing the lid on a hot
+ * Mac gets the full delay, not an instant sleep on a clock that ran while it was open.
  */
 
 /** Fixed, not a setting: changing it needs its own decision. */
@@ -166,16 +172,23 @@ export function createThermalEvaluator(): ThermalEvaluator {
 
     observe(sample, settings) {
       const { at } = sample;
+      // The lid known to be open: nothing runs (see the top of this file). Unknown still counts.
+      const open = sample.lidClosed === false;
 
       // An unreadable pressure neither starts nor breaks a run: a sensor hiccup in the middle
       // of a heavy spell must not restart its clock. Total loss is the blind trigger's job.
-      if (sample.pressure !== null) {
+      if (open) {
+        moderateSince = null;
+        heavySince = null;
+      } else if (sample.pressure !== null) {
         moderateSince = sample.pressure >= 1 ? (moderateSince ?? at) : null;
         heavySince = sample.pressure >= 2 ? (heavySince ?? at) : null;
       }
       if (sample.batteryC !== null) {
-        hotBattery = sample.batteryC >= BATTERY_LIMIT_C ? hotBattery + 1 : 0;
+        hotBattery = !open && sample.batteryC >= BATTERY_LIMIT_C ? hotBattery + 1 : 0;
         lastBatteryC = sample.batteryC;
+      } else if (open) {
+        hotBattery = 0;
       }
       const blind = sample.lidClosed === true && sample.pressure === null && sample.batteryC === null;
       blindSince = blind ? (blindSince ?? at) : null;
@@ -189,7 +202,7 @@ export function createThermalEvaluator(): ThermalEvaluator {
 
       const heavyDelayS = settings.pressure === "moderate" ? Math.min(settings.delayS, HEAVY_CAP_S) : settings.delayS;
       const running: Array<{ reason: ThermalReason; firesAt: number | null; detail: string }> = [];
-      if (sample.pressure !== null && sample.pressure >= PRESSURE_AT_ONCE) {
+      if (!open && sample.pressure !== null && sample.pressure >= PRESSURE_AT_ONCE) {
         running.push({ reason: "trapping", firesAt: at, detail: pressureName(sample.pressure) });
       }
       if (heavySince !== null) {

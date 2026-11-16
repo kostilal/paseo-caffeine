@@ -79,7 +79,7 @@ caffeinate). Four triggers, read every 15 s:
 - **Thermal pressure**, macOS's own verdict over all its sensors (`com.apple.system.
   thermalpressurelevel`, public in `OSThermalNotification.h`, readable without root): Heavy held
   for 60 s by default; Moderate and its delay can be picked in Settings, and Heavy still fires
-  within 60 s under it; Trapping and above at once, always. On Apple Silicon this replaces
+  within 60 s under it; Trapping and above at once, whatever the setting. On Apple Silicon this replaces
   `pmset -g therm`, which never reports anything there.
 - **The battery at 45 °C**, two readings in a row: Apple's upper storage temperature for a
   MacBook Pro and the usual Li-ion charging limit, read the same way on every Mac. Fixed.
@@ -88,6 +88,11 @@ caffeinate). Four triggers, read every 15 s:
   default, 5 % steps, from 10 points above the fans' floor to 95 %) for the chosen time (60 s by
   default). Set in the popup that opens from the fan reading on the page. Fans stay at their
   floor in a closed bag, so this one catches a Mac working flat out, not a hot bag.
+
+None of them acts while the lid is known to be open: somebody is at the Mac, a busy build
+reaches Heavy within a minute, and putting the Mac to sleep then only locks the screen in front
+of them. Lid mode stays on, so the lid can be closed at any moment, and every trigger counts
+from the moment it closes (a lid that cannot be read counts as closed).
 
 A trip runs one sequence, from the plugin or from the LaunchAgent guard, whichever sees it
 first (a lock keeps it to one): the latch is written; `sudo -n pmset -a disablesleep 0`,
