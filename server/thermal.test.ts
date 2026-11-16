@@ -100,6 +100,35 @@ test("no readings at all with the lid closed sleeps after 90 s; with the lid ope
   assert.equal(runUntilTrip([...repeat(5, blind), {}, ...repeat(5, blind)]), null);
 });
 
+test("with the lid open nothing puts the Mac to sleep: not trapping, not heavy, not a hot battery", () => {
+  const open = { lidClosed: false };
+  assert.equal(runUntilTrip(repeat(40, { ...open, pressure: 3 })), null, "trapping");
+  assert.equal(runUntilTrip(repeat(40, { ...open, pressure: 2 })), null, "heavy");
+  const moderate = normalizeThermal({ thermalPressure: "moderate", thermalDelayS: 120 });
+  assert.equal(runUntilTrip(repeat(40, { ...open, pressure: 1 }), moderate), null, "moderate");
+  assert.equal(runUntilTrip(repeat(40, { ...open, batteryC: 46 })), null, "battery");
+  // The page still says it is warm, and nothing is pending.
+  const guard = createThermalEvaluator();
+  const { view } = guard.observe(sample({ at: T0, ...open, pressure: 2 }), DEFAULT_THERMAL);
+  assert.deepEqual(view, { state: "warm", pendingReason: "", firesAt: null });
+});
+
+test("an unknown lid still counts as closed for every trigger", () => {
+  assert.equal(runUntilTrip([{ lidClosed: null, pressure: 3 }])?.trip.reason, "trapping");
+  assert.equal(runUntilTrip(repeat(10, { lidClosed: null, pressure: 2 }))?.at, T0 + 60 * S);
+});
+
+test("closing the lid on a hot Mac starts every run from the close, not from while it was open", () => {
+  // Heavy for 5 min with the lid open, then closed: the full 60 s from the close.
+  const heavy = runUntilTrip([...repeat(20, { lidClosed: false, pressure: 2 }), ...repeat(10, { pressure: 2 })]);
+  assert.equal(heavy?.at, T0 + (20 * 15 + 60) * S);
+  // A hot battery read with the lid open does not count towards the two in a row.
+  const battery = runUntilTrip([{ lidClosed: false, batteryC: 46 }, { batteryC: 46 }, { batteryC: 46 }]);
+  assert.equal(battery?.index, 2);
+  // Trapping still acts on the first reading with the lid closed.
+  assert.equal(runUntilTrip([{ lidClosed: false, pressure: 3 }, { pressure: 3 }])?.index, 1);
+});
+
 test("the fans trip with the lid closed at the threshold for the delay, against each fan's own maximum", () => {
   const busy = { fans: fans(6800, 2320) }; // one fan at 87 %
   const hit = runUntilTrip(repeat(10, busy));

@@ -16,7 +16,8 @@ import { heatShell } from "./lid.server.ts";
 interface Machine {
   pressure?: string;
   battery?: string;
-  lid?: "Yes" | "No";
+  /** "": ioreg answers without a value, so the lid cannot be read. */
+  lid?: "Yes" | "No" | "";
   fanPct?: string;
   sleepWorks?: boolean;
   conf?: string;
@@ -227,6 +228,36 @@ test("blind for 90 s with the lid closed sleeps; with the lid open it does not",
     assert.equal(sleepnows(open.calls()), 0);
   } finally {
     open.cleanup();
+  }
+});
+
+test("with the lid open the guard puts nothing to sleep, and a run starts over once it closes", () => {
+  for (const machine of [{ pressure: "3" }, { pressure: "2" }, { battery: "4600" }]) {
+    const mac = fakeMac({ ...machine, lid: "No" });
+    try {
+      mac.run(ticks(40));
+      assert.equal(sleepnows(mac.calls()), 0, JSON.stringify(machine));
+      assert.equal(mac.latch(), null);
+      assert.equal(mac.sleepDisabled(), "1", "lid mode stays on");
+    } finally {
+      mac.cleanup();
+    }
+  }
+  const closing = fakeMac({ pressure: "2", lid: "No" });
+  try {
+    closing.run(`${ticks(20)}\nset_reading lid Yes\n${ticks(4)}`);
+    assert.equal(sleepnows(closing.calls()), 0, "0 … 45 s since the close");
+    closing.run("S2=$(( $(now) - 60 )); heat_tick");
+    assert.equal(sleepnows(closing.calls()), 1);
+  } finally {
+    closing.cleanup();
+  }
+  const unknown = fakeMac({ pressure: "3", lid: "" });
+  try {
+    unknown.run("heat_tick");
+    assert.equal(sleepnows(unknown.calls()), 1, "a lid that cannot be read still counts");
+  } finally {
+    unknown.cleanup();
   }
 });
 

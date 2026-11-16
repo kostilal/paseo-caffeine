@@ -161,7 +161,7 @@ export const OPERATIONS: CaffeineOperation[] = [
     contract: getStatus,
     title: "Heat: temperatures, fans and the heat guard",
     description:
-      "Read every 15 s. pressure: macOS thermal pressure 0 nominal, 1 moderate, 2 heavy, 3 trapping, 4 sleeping. cpuC: hottest CPU die °C; batteryC: battery °C (limit 45). fans: each fan's rpm, min, max, manual (another app drives it); [] no fans, null unreadable, sensors says why. lidClosed: the lid is shut now. The heat guard acts only when armed (lid mode on): state normal|warm|pending|blind|latched, pendingReason, firesAt; latch, cool, coolAt: cool-down after a trip; event: last trip; settings: its thresholds. dryRun: it only logs; simulated: fake readings.",
+      "Read every 15 s. pressure: macOS thermal pressure 0 nominal, 1 moderate, 2 heavy, 3 trapping, 4 sleeping. cpuC: hottest CPU die °C; batteryC: battery °C (limit 45). fans: each fan's rpm, min, max, manual (another app drives it); [] no fans, null unreadable, sensors says why. lidClosed: the lid is shut now. The heat guard acts only when armed (lid mode on) and the lid is not known open: state normal|warm|pending|blind|latched, pendingReason, firesAt; latch, cool, coolAt: cool-down after a trip; event: last trip; settings: its thresholds. dryRun: it only logs; simulated: fake readings.",
     input: none,
     fields: ["thermal"],
   },
